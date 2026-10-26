@@ -6,8 +6,8 @@
     "screenshotC": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-c.png",
     "screenshotD": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-d.png"
   },
-  "total": 26,
-  "passed": 26,
+  "total": 28,
+  "passed": 28,
   "failed": [],
   "checks": [
     {
@@ -54,7 +54,7 @@
       "id": "C-6",
       "title": "同源（首页）：iframe 已加载视频页",
       "pass": true,
-      "detail": "https://www.bilibili.com/video/BV1NDnR6JEAX?track_id="
+      "detail": "https://www.bilibili.com/video/BV1Jcnd6kEQ3"
     },
     {
       "id": "C-7",
@@ -85,6 +85,12 @@
       "title": "同源（首页）：back/forward 往返后 history.length 未增长",
       "pass": true,
       "detail": "3"
+    },
+    {
+      "id": "C-13",
+      "title": "同源（首页）：抽屉标题已清洗（无站点后缀）",
+      "pass": true,
+      "detail": "2026无畏契约解说主持杯 | 选人大会"
     },
     {
       "id": "C-12",
@@ -154,6 +160,12 @@
       "title": "跨源（搜索页）：back/forward 往返后 history.length 未增长",
       "pass": true,
       "detail": "4"
+    },
+    {
+      "id": "D-13",
+      "title": "跨源（搜索页）：抽屉标题已清洗（无站点后缀）",
+      "pass": true,
+      "detail": "《绝区零》先导演示丨挽昼"
     },
     {
       "id": "D-12",

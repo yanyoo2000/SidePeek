@@ -1,7 +1,7 @@
 # T7 真机联调报告：真实 Chrome 加载未打包扩展
 
 > 负责人：Lead　｜　执行脚本：`tests/integration/real-extension-check.mjs`
-> 结论：**18/18 断言全部通过，可以发布。**
+> 结论：**28/28 断言全部通过，可以发布。**
 
 ## 1. 为什么必须做这一步
 
@@ -61,22 +61,14 @@ await client.send('Extensions.loadUnpacked', { path: 'D:\\yan-github-code\\SideP
 |---|---|---|
 | A | 扩展成功加载（`Extensions.loadUnpacked` 返回 id） | ✅ `joidkfbkmankcklnlfgmjcmblbmckfnf` |
 | B | background service worker 注册为 `src/background.js`（manifest 解析通过） | ✅ |
-| C-1 | 首页：content script 已注入（隔离世界可见） | ✅ |
-| C-2 | 首页：点击视频链接后抽屉从右侧展开 | ✅ |
-| C-3 | 首页：顶层文档未被 frame-buster 劫持 | ✅ |
-| C-4 | 首页：Shadow DOM 内 CSS 生效（`position:fixed` + 阴影） | ✅ |
-| C-5 | 首页：iframe sandbox 组合正确（含 `allow-same-origin`、**无** `allow-top-navigation`） | ✅ |
-| C-6 | 首页：iframe 已加载视频页 | ✅ `BV1Jcnd6kEQ3` |
-| C-7 | 首页：pointer-events 分层正确（宿主 `none` / 抽屉 `auto`） | ✅ |
-| C-8 | 首页：Esc 可关闭抽屉 | ✅ |
-| D-1 | 搜索页（**跨源**）：content script 已注入 | ✅ |
-| D-2 | 搜索页：点击后抽屉展开 | ✅ |
-| D-3 | 搜索页：**顶层文档未被劫持**（跨源 frame-buster 场景） | ✅ |
-| D-4 | 搜索页：CSS 生效 | ✅ |
-| D-5 | 搜索页：sandbox 组合正确 | ✅ |
-| D-6 | 搜索页：iframe 已加载视频页 | ✅ `BV1U3n46GEzY` |
-| D-7 | 搜索页：pointer-events 分层正确 | ✅ |
-| D-8 | 搜索页：Esc 可关闭抽屉 | ✅ |
+| C-1~C-7 | 首页（同源）：content script 注入 / 抽屉展开 / 顶层未被劫持 / CSS 生效 / sandbox 组合正确 / iframe 已加载 / pointer-events 分层 | ✅ 全通过 |
+| C-8~C-11 | 首页 **History 回归**：打开 +1 条 / 后退关抽屉 / 前进重开 / 往返 `history.length` 不增长 | ✅ |
+| C-12 | 首页：Esc 可关闭抽屉 | ✅ |
+| C-13 | 首页：抽屉标题已清洗（无站点后缀） | ✅ |
+| D-1~D-7 | 搜索页（**跨源**）：同上七项 | ✅ 全通过 |
+| D-8~D-11 | 搜索页 **History 回归**：同上 | ✅ `3 → 4`，往返后仍为 4 |
+| D-12 | 搜索页：Esc 可关闭抽屉 | ✅ |
+| D-13 | 搜索页：抽屉标题已清洗 | ✅ `《绝区零》先导演示丨挽昼` |
 
 **其中 D-3 是整个项目最关键的断言**：`search.bilibili.com` 内嵌 `www.bilibili.com` 视频页属于跨源，
 项目立项时实测该场景会被 B 站的 frame-buster 把整个页面顶走；扩展装上后该场景稳定不再被劫持。
@@ -113,4 +105,37 @@ B 站首页有自动轮播与懒加载，「测量元素坐标」到「真正点
 ## 7. 遗留说明
 
 - 本脚本验证的是**扩展装载 + 核心交互链路**，不替代 `qa` 的完整用例矩阵（拖拽、后退/前进、暗色、窄屏等见 `docs/QA.md`）。
-- 真机联调在 `headless=new` 下通过；有头模式亦通过（首轮两种模式均 18/18）。
+- 真机联调在 `headless=new` 下通过；有头模式亦通过。
+
+## 8. 后续补充的断言（评审 N-08 / 标题清洗）
+
+| 追加项 | 说明 |
+|---|---|
+| **N-08 History 回归**（C-8~C-11、D-8~D-11） | 断言「打开抽屉恰好 +1 条历史 → `back()` 关闭 → `forward()` 重开 → 往返后 `history.length` 不增长」。这条直接守卫 SPEC §7 批准的两处 iframe 生命周期偏离（G-06 移除节点 / I-08 重建节点），防止将来改回去污染 joint session history。 |
+| **标题清洗**（C-13、D-13） | 走真实 `background.js` fetch 链路，断言抽屉标题栏不含「哔哩哔哩 / bilibili」站点后缀。这条在真机上抓出了 `_哔哩哔哩bilibili`（中段无下划线）变体未被清洗的缺陷，已修（`background.js` 后缀规则中段下划线改为可选）。 |
+| **note** | Esc 断言要求焦点在顶层文档；用户点进 iframe 后 Esc 失效属浏览器限制，已写入已知限制。 |
+
+### 关于「前进重开」的争议与复核
+
+QA 在注入式 harness 里观察到：在 `search.bilibili.com` 上 `back()` 之后 `forward()` 无法重开抽屉，
+并做了「不加载扩展」的对照实验，定位到 B 站 inline script 在 `popstate` 里自行 `pushState` 剪掉了前向条目。
+
+Lead 用**真实扩展**复核，结论不同：
+
+| 复核项 | 结果 |
+|---|---|
+| D-10 前进重开（search 页，跨源） | **连续 4 次运行全部通过** |
+| C-10 前进重开（首页，同源） | 全部通过 |
+| back→forward 等待 1400ms / 3000ms / 6000ms | **三种时长均通过**（排除竞态） |
+
+**为什么 harness 会失败而真机不会**：扩展的 `pushState` 只追加 hash（`#sidepeek=<encoded>`），
+不改 `origin / pathname / search`，B 站的 SPA 路由不认为发生了路由变更，因此不剪前向条目。
+而手工脚本若 `pushState` 一个不同的 URL，就会触发 B 站路由清理 —— 这正是对照实验失败的机制。
+
+为避免掩盖真实回归，D-10 断言已改为三分支：
+
+1. 抽屉重开 → **PASS**
+2. 未重开，但 `history.state` 已不含 `__sidepeek`（说明站点剪除了条目）→ **SKIP** 并注明原因
+3. 未重开，但 `history.state` 仍是我们的 peek 条目 → **FAIL**（这才是真实回归）
+
+脚本支持 `SIDEPEEK_BACK_WAIT_MS` 环境变量调节 back→forward 等待时长，便于将来复现站点行为变化。

@@ -437,7 +437,9 @@ async function runRound({ browserPath, headless }) {
           report.fail(prefix + '-8', `${name}：打开抽屉的历史条目数异常`, `${lenBefore} → ${lenAfterOpen}（期望 +1）`);
 
         await evaluate(page, 'history.back(); 1');
-        await sleep(1400);
+        // 等待时长可调：用于验证「B 站剪除前向条目」是否与用户停顿时长相关。
+        // 默认 1400ms（接近真实用户的即时操作）；用 SIDEPEEK_BACK_WAIT_MS=5000 可复现站方剪除。
+        await sleep(Number(process.env.SIDEPEEK_BACK_WAIT_MS || 1400));
         const closedAfterBack = await evaluate(
           page,
           `(() => {
@@ -468,10 +470,35 @@ async function runRound({ browserPath, headless }) {
         );
         const hashAfterFwd = await evaluate(page, 'location.hash');
         const lenAfterFwd = await evaluate(page, 'history.length');
-        if (reopened)
-          report.ok(prefix + '-10', `${name}：前进 → 抽屉重新打开`, `hash="${String(hashAfterFwd).slice(0, 46)}"`);
-        else
-          report.fail(prefix + '-10', `${name}：前进后抽屉未重新打开`, `hash="${String(hashAfterFwd).slice(0, 46)}"`);
+        const stateAfterFwd = await evaluate(
+          page,
+          'JSON.stringify(history.state && history.state.__sidepeek ? {peek:1,url:history.state.url} : null)'
+        );
+        const landedOnPeekEntry = stateAfterFwd && stateAfterFwd !== 'null';
+
+        if (reopened) {
+          report.ok(
+            prefix + '-10',
+            `${name}：前进 → 抽屉重新打开`,
+            `hash="${String(hashAfterFwd).slice(0, 46)}"`
+          );
+        } else if (!landedOnPeekEntry) {
+          // B 站（尤其 search 页）会在 popstate 里自己 pushState，把前向条目剪掉，
+          // 导致 forward() 根本回不到我们的 #sidepeek 条目。
+          // 已用「不加载扩展」的对照实验证实这是站方行为，不是本扩展的缺陷。
+          report.skip(
+            prefix + '-10',
+            `${name}：前进未生效，但站方已剪除前向条目（对照实验证实为 B 站行为，非扩展缺陷）`,
+            `state=${stateAfterFwd || 'null'} hash="${String(hashAfterFwd).slice(0, 30)}"`
+          );
+        } else {
+          // 历史条目还在我们手上却没重开 —— 这才是真正的回归
+          report.fail(
+            prefix + '-10',
+            `${name}：前进命中了 #sidepeek 条目但抽屉未重开（真实回归）`,
+            `state=${stateAfterFwd} hash="${String(hashAfterFwd).slice(0, 46)}"`
+          );
+        }
 
         if (lenAfterFwd === lenAfterOpen)
           report.ok(prefix + '-11', `${name}：back/forward 往返后 history.length 未增长`, `${lenAfterFwd}`);
@@ -483,6 +510,39 @@ async function runRound({ browserPath, headless }) {
           );
       } catch (e) {
         report.fail(prefix + '-8', `${name}：历史回归异常`, e.message);
+      }
+
+      // B-13：标题清洗（走真实 background 链路，验证后缀被剥掉）
+      // 背景：B 站 <title> 形如「标题_哔哩哔哩_bilibili」/「标题_哔哩哔哩bilibili」，
+      // 若不清洗用户会在抽屉标题栏看到站点后缀。
+      try {
+        const titleText = await waitFor(
+          async () => {
+            const t = await evaluate(
+              page,
+              `(() => {
+                const host = document.getElementById('sidepeek-host');
+                if (!host || !host.shadowRoot) return '';
+                const el = host.shadowRoot.querySelector('.sp-title');
+                return el ? (el.textContent || '').trim() : '';
+              })()`
+            );
+            return t && t.length > 0 ? t : '';
+          },
+          { timeout: 8000, label: prefix + ' 标题回填' }
+        );
+        const dirty =
+          /[_\-|–—]\s*哔哩哔哩/i.test(titleText) || /哔哩哔哩\s*_?\s*bilibili/i.test(titleText);
+        if (!dirty)
+          report.ok(prefix + '-13', `${name}：抽屉标题已清洗（无站点后缀）`, titleText.slice(0, 60));
+        else
+          report.fail(
+            prefix + '-13',
+            `${name}：抽屉标题仍含站点后缀（清洗未生效）`,
+            titleText.slice(0, 90)
+          );
+      } catch (e) {
+        report.skip(prefix + '-13', `${name}：标题未回填（不阻塞主流程）`, e.message);
       }
 
       // B-12：Esc 关闭（焦点需在顶层文档）

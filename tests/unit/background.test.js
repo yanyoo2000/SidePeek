@@ -73,6 +73,27 @@ test('cleanBilibiliTitle: 站名本身不算标题（首页/栏目页）→ null
   assert.equal(api.cleanBilibiliTitle('哔哩哔哩_bilibili'), null);
 });
 
+test('cleanBilibiliTitle: 「_哔哩哔哩bilibili」中段下划线缺失变体（T7 真机回归）', () => {
+  // 本次缺陷：真实标题中间没有第二个下划线，旧规则漏清洗（真机截图里用户可见）
+  assert.equal(
+    api.cleanBilibiliTitle('【绝区零】先导演示 | 挽昼_哔哩哔哩bilibili'),
+    '【绝区零】先导演示 | 挽昼'
+  );
+  // 原有形态防回归
+  assert.equal(
+    api.cleanBilibiliTitle('【官方 MV】Never Gonna Give You Up - Rick Astley_哔哩哔哩_bilibili'),
+    '【官方 MV】Never Gonna Give You Up - Rick Astley'
+  );
+  // 反例：后缀不在结尾 → 不得清洗
+  assert.equal(
+    api.cleanBilibiliTitle('聊聊哔哩哔哩bilibili的推荐算法'),
+    '聊聊哔哩哔哩bilibili的推荐算法'
+  );
+  // 反例：整条标题就是后缀，清洗后为空 → null（上层走临时标题兜底）
+  assert.equal(api.cleanBilibiliTitle('哔哩哔哩bilibili'), null);
+  assert.equal(api.cleanBilibiliTitle('_哔哩哔哩bilibili'), null);
+});
+
 test('cleanBilibiliTitle: 普通标题原样保留 / 非法输入 → null', () => {
   assert.equal(api.cleanBilibiliTitle('某个视频'), '某个视频');
   assert.equal(api.cleanBilibiliTitle('AT&T 的视频'), 'AT&T 的视频');
