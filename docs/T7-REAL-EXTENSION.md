@@ -1,7 +1,8 @@
 # T7 真机联调报告：真实 Chrome 加载未打包扩展
 
 > 负责人：Lead　｜　执行脚本：`tests/integration/real-extension-check.mjs`
-> 结论：**28/28 断言全部通过，可以发布。**
+> 结论：**27 PASS + 1 SKIP（0 FAIL），可以发布。**
+> （SKIP 项为搜索页「前进重开」：B 站自行剪除前向条目，非扩展缺陷，详见 §8）
 
 ## 1. 为什么必须做这一步
 
@@ -55,7 +56,7 @@ await client.send('Extensions.loadUnpacked', { path: 'D:\\yan-github-code\\SideP
 且 `origin` 以 `chrome-extension://` 开头的 context，用它的 `contextId` 求值。
 （抽屉 DOM 在主世界可见，所以 UI 断言仍在主世界做。）
 
-## 4. 断言结果（18/18 PASS）
+## 4. 断言结果（27 PASS + 1 SKIP）
 
 | 编号 | 断言 | 结果 |
 |---|---|---|
@@ -66,7 +67,7 @@ await client.send('Extensions.loadUnpacked', { path: 'D:\\yan-github-code\\SideP
 | C-12 | 首页：Esc 可关闭抽屉 | ✅ |
 | C-13 | 首页：抽屉标题已清洗（无站点后缀） | ✅ |
 | D-1~D-7 | 搜索页（**跨源**）：同上七项 | ✅ 全通过 |
-| D-8~D-11 | 搜索页 **History 回归**：同上 | ✅ `3 → 4`，往返后仍为 4 |
+| D-8~D-11 | 搜索页 **History 回归**：打开 +1 条 `3 → 4` / 后退关抽屉 / 往返 `history.length` 不增长 | ✅ / ⏭️ D-10 SKIP（站方剪除前向条目） |
 | D-12 | 搜索页：Esc 可关闭抽屉 | ✅ |
 | D-13 | 搜索页：抽屉标题已清洗 | ✅ `《绝区零》先导演示丨挽昼` |
 
@@ -115,27 +116,59 @@ B 站首页有自动轮播与懒加载，「测量元素坐标」到「真正点
 | **标题清洗**（C-13、D-13） | 走真实 `background.js` fetch 链路，断言抽屉标题栏不含「哔哩哔哩 / bilibili」站点后缀。这条在真机上抓出了 `_哔哩哔哩bilibili`（中段无下划线）变体未被清洗的缺陷，已修（`background.js` 后缀规则中段下划线改为可选）。 |
 | **note** | Esc 断言要求焦点在顶层文档；用户点进 iframe 后 Esc 失效属浏览器限制，已写入已知限制。 |
 
-### 关于「前进重开」的争议与复核
+### 关于「前进重开」：一次**我自己写错断言**的教训
 
-QA 在注入式 harness 里观察到：在 `search.bilibili.com` 上 `back()` 之后 `forward()` 无法重开抽屉，
-并做了「不加载扩展」的对照实验，定位到 B 站 inline script 在 `popstate` 里自行 `pushState` 剪掉了前向条目。
+这是本项目最有价值的一次自我纠错，完整记录如下。
 
-Lead 用**真实扩展**复核，结论不同：
+**QA 的观察**：在 `search.bilibili.com` 上 `back()` 之后 `forward()` 无法重开抽屉。
+QA 还做了「完全不加载扩展」的对照实验，定位到 B 站 inline script：
 
-| 复核项 | 结果 |
+```js
+window.addEventListener('popstate', function () {
+  if (!(history.state && history.state.back))
+    history.pushState(null, document.title, location.href);
+});
+```
+
+即站方在 `popstate` 里按 `history.state.back` 决定是否 `pushState`，**把前向条目剪掉** —— 它根本不看 URL。
+
+**Lead 当时的错误结论**：我连续跑 4 次 D-10 都是 ✅，还扫了 1400/3000/6000ms 三种等待时长，
+于是判断「真机与 harness 结论相反」，并写了「扩展只改 hash 所以站点路由不认为变更」的错误机制解释。
+
+**Reviewer 推翻了这个结论**，给出四条互相印证的证据：
+
+1. **断言有 bug**：我用的判据是 `rect.left < window.innerWidth - 10`。但抽屉是 `position:fixed;right:0`，
+   其包含块宽度是 `documentElement.clientWidth`（**不含**经典滚动条），而 `window.innerWidth` **含**滚动条。
+   关闭态抽屉被 `translateX(100%)` 推到 `left === clientWidth === 1425`，
+   于是 `1425 < 1440 - 10 === 1430` 恒成立 → **关闭态被误判为「已展开」**。
+2. **像素实证**：采样 T7 自己产出的截图，抽屉右缘 x=1425，右侧 1425..1439 正是 15px 滚动条。
+3. **报告自相矛盾**：同一份报告里 C-10（真实重开）detail 带 `hash="#sidepeek=…"`，
+   而 D-10 detail 是 `hash=""`。真重开时 core 必然写回 hash —— hash 为空说明根本没重开。
+4. **站点脚本**：只读抓取 search 页 HTML，看到上面那段只按 `history.state.back` 判断的 inline script，
+   证明「只改 hash 就不会被剪」的机制解释是错的。
+
+**结论**：站方行为确实存在，我的「真机通过」是假阳性。这不是产品缺陷 ——
+站方剪前向条目无法从扩展侧安全阻止（强行拦截会破坏 B 站路由，违反最小侵入原则）。
+
+**修复**：
+
+1. 判据改为以 `.sp-open` 类为主判据（与滚动条、动画都无关），并用 `clientWidth` 交叉校验；
+2. D-10 改为三分支：
+   - 抽屉重开 → **PASS**
+   - 未重开且 `history.state` 已不含 `__sidepeek` → **SKIP**（站点剪除条目，注明原因）
+   - 未重开但 state 仍是我们的 peek 条目 → **FAIL**（真实回归）
+3. 报告 summary 增加 `skipped` 计数与控制台提示，避免 SKIP 静默稀释覆盖率。
+
+**修复后实测**（这才是可信结果）：
+
+| 断言 | 结果 |
 |---|---|
-| D-10 前进重开（search 页，跨源） | **连续 4 次运行全部通过** |
-| C-10 前进重开（首页，同源） | 全部通过 |
-| back→forward 等待 1400ms / 3000ms / 6000ms | **三种时长均通过**（排除竞态） |
+| C-10 首页（同源）前进重开 | ✅ **PASS** —— 真实重开，hash 写回 `#sidepeek=…` |
+| D-10 搜索页（跨源）前进重开 | ⏭️ **SKIP** —— 未重开，且 `history.state` 已无 `__sidepeek`（站点剪除） |
+| C-11 / D-11 `history.length` 不增长 | ✅ PASS |
+| 总体 | 27 PASS + 1 SKIP，0 FAIL，退出码 0 |
 
-**为什么 harness 会失败而真机不会**：扩展的 `pushState` 只追加 hash（`#sidepeek=<encoded>`），
-不改 `origin / pathname / search`，B 站的 SPA 路由不认为发生了路由变更，因此不剪前向条目。
-而手工脚本若 `pushState` 一个不同的 URL，就会触发 B 站路由清理 —— 这正是对照实验失败的机制。
+脚本仍支持 `SIDEPEEK_BACK_WAIT_MS` 调节 back→forward 等待时长，便于将来复现站点行为变化。
 
-为避免掩盖真实回归，D-10 断言已改为三分支：
-
-1. 抽屉重开 → **PASS**
-2. 未重开，但 `history.state` 已不含 `__sidepeek`（说明站点剪除了条目）→ **SKIP** 并注明原因
-3. 未重开，但 `history.state` 仍是我们的 peek 条目 → **FAIL**（这才是真实回归）
-
-脚本支持 `SIDEPEEK_BACK_WAIT_MS` 环境变量调节 back→forward 等待时长，便于将来复现站点行为变化。
+> 教训：**「我这边跑通了」不等于断言是对的。** 判据本身也需要被审查。
+> 这条比任何功能实现都更值得写进项目记录。

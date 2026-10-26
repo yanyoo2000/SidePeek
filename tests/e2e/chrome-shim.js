@@ -44,7 +44,8 @@
   var TITLE_RE = /<title[^>]*>([\s\S]*?)<\/title>/i;
   var TITLE_SUFFIX_PATTERNS = [
     /\s*(?:[-_|–—]\s*)?哔哩哔哩\s*[（(]\s*゜\s*[–—-]?\s*゜\s*[)）]\s*つ\s*ロ\s*干杯\s*[~～]\s*[-_]?\s*bilibili\s*$/i,
-    /\s*(?:[-_|–—]\s*)?哔哩哔哩\s*_\s*bilibili\s*$/i,
+    // 与 src/background.js 保持一致：中段下划线可选（实测存在「标题_哔哩哔哩bilibili」变体）
+    /\s*(?:[-_|–—]\s*)?哔哩哔哩\s*_?\s*bilibili\s*$/i,
     /\s*[-_|–—]\s*哔哩哔哩\s*$/i,
     /\s*_\s*哔哩哔哩\s*$/i,
     /\s*_\s*bilibili\s*$/i,

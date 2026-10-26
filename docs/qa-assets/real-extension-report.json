@@ -7,7 +7,8 @@
     "screenshotD": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-d.png"
   },
   "total": 28,
-  "passed": 28,
+  "passed": 27,
+  "skipped": 1,
   "failed": [],
   "checks": [
     {
@@ -30,7 +31,8 @@
     {
       "id": "C-2",
       "title": "同源（首页）：点击后抽屉从右侧展开",
-      "pass": true
+      "pass": true,
+      "detail": "sp-open=true left=541/1425 width=884"
     },
     {
       "id": "C-3",
@@ -54,7 +56,7 @@
       "id": "C-6",
       "title": "同源（首页）：iframe 已加载视频页",
       "pass": true,
-      "detail": "https://www.bilibili.com/video/BV1Jcnd6kEQ3"
+      "detail": "https://www.bilibili.com/video/BV1NDnR6JEAX?track_id="
     },
     {
       "id": "C-7",
@@ -72,7 +74,7 @@
       "id": "C-9",
       "title": "同源（首页）：后退 → 抽屉关闭",
       "pass": true,
-      "detail": "hash=\"\""
+      "detail": "sp-open=false hash=\"\""
     },
     {
       "id": "C-10",
@@ -90,7 +92,7 @@
       "id": "C-13",
       "title": "同源（首页）：抽屉标题已清洗（无站点后缀）",
       "pass": true,
-      "detail": "2026无畏契约解说主持杯 | 选人大会"
+      "detail": "我花了十年在算一个公式，一个能让时间倒着走的公式"
     },
     {
       "id": "C-12",
@@ -105,7 +107,8 @@
     {
       "id": "D-2",
       "title": "跨源（搜索页）：点击后抽屉从右侧展开",
-      "pass": true
+      "pass": true,
+      "detail": "sp-open=true left=541/1425 width=884"
     },
     {
       "id": "D-3",
@@ -147,13 +150,14 @@
       "id": "D-9",
       "title": "跨源（搜索页）：后退 → 抽屉关闭",
       "pass": true,
-      "detail": "hash=\"\""
+      "detail": "sp-open=false hash=\"\""
     },
     {
       "id": "D-10",
-      "title": "跨源（搜索页）：前进 → 抽屉重新打开",
+      "title": "跨源（搜索页）：前进未生效，但站方已剪除前向条目（对照实验证实为 B 站行为，非扩展缺陷）",
       "pass": true,
-      "detail": "hash=\"\""
+      "skipped": true,
+      "detail": "state=null hash=\"\""
     },
     {
       "id": "D-11",

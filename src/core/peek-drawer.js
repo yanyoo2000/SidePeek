@@ -446,7 +446,16 @@
 
   function viewportWidth() {
     if (typeof window === 'undefined') return 1280;
-    return window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 1280;
+
+    // G-05 / QA MINOR-2：抽屉是 `position:fixed; right:0`，它的包含块宽度是
+    // `documentElement.clientWidth`（**不含**经典滚动条），而 `window.innerWidth` 含滚动条。
+    // 带滚动条的页面上两者差 15px：用 innerWidth 会让抽屉多占这 15px，
+    // 「左侧至少留 48px 可点遮罩」的 G-05 承诺实际缩水（实测 innerWidth=492 / clientWidth=477 时只剩 34px）。
+    // 所以优先用布局视口宽度；clientWidth 不可用（0 / undefined）时才回退 innerWidth。
+    var docEl = typeof document !== 'undefined' ? document.documentElement : null;
+    var layoutWidth = docEl && docEl.clientWidth;
+    if (layoutWidth > 0) return layoutWidth;
+    return window.innerWidth || 1280;
   }
 
   /**

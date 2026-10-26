@@ -217,6 +217,9 @@ function createEnv(options = {}) {
   const documentElement = makeElement('html');
   const body = makeElement('body');
   documentElement.appendChild(body);
+  // 布局视口宽度（不含纵向滚动条）：默认等于 innerWidth；可用 options.clientWidth 模拟"有滚动条"。
+  documentElement.clientWidth =
+    options.clientWidth === undefined ? options.innerWidth || 1280 : options.clientWidth;
 
   const documentRef = {
     documentElement,
@@ -508,6 +511,76 @@ test('sanitizeSandbox: 缺 allow-scripts / allow-same-origin 时回退到内置�
   // 空 / 非字符串也回退
   assert.equal(createDrawer(null, { sandbox: '   ' })._sandbox, SidePeekDrawer.SANDBOX);
   assert.equal(createDrawer(null, { sandbox: null })._sandbox, SidePeekDrawer.SANDBOX);
+});
+
+/* ================================================================== *
+ * 3.1 QA MINOR-2：48px 遮罩必须以布局视口（clientWidth）为基准
+ * ================================================================== */
+
+test('MINOR-2: clientWidth=477 / innerWidth=492 时，clamp 上限 ≤477-48 且遮罩 ≥48px', () => {
+  const env = createEnv({ innerWidth: 492, clientWidth: 477 });
+  const drawer = createDrawer(env, { defaultWidth: 600, minWidth: 420, maxWidthRatio: 0.9 });
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    drawer.setWidth(2000); // 触发上限 clamp
+    const applied = drawer._appliedWidth;
+    // 以布局视口 477 为基准：hi = min(0.9*477, 477-48) = min(429.3, 429) = 429
+    assert.equal(applied, Math.round(Math.min(0.9 * 477, 477 - 48)));
+    assert.equal(applied, 429);
+    assert.ok(applied <= 477 - 48, 'clamp 上限必须 ≤ clientWidth - 48');
+    assert.ok(477 - applied >= 48, `实际可点遮罩 ${477 - applied}px 必须 >= 48px`);
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('MINOR-2: 窗口变化（clientWidth=1200 / innerWidth=1215）时遮罩仍 ≥48px', () => {
+  const env = createEnv({ innerWidth: 1215, clientWidth: 1200 });
+  const drawer = createDrawer(env, { defaultWidth: 600, minWidth: 420, maxWidthRatio: 0.9 });
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    drawer.setWidth(2000);
+    const applied = drawer._appliedWidth;
+    // hi = min(0.9*1200, 1200-48) = min(1080, 1152) = 1080
+    assert.equal(applied, 1080);
+    assert.ok(1200 - applied >= 48, `实际可点遮罩 ${1200 - applied}px 必须 >= 48px`);
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('MINOR-2: clientWidth 为 0 / undefined 时回退 innerWidth，不崩', () => {
+  for (const layoutWidth of [0, undefined]) {
+    const env = createEnv({ innerWidth: 492 });
+    env.documentElement.clientWidth = layoutWidth;
+    const drawer = createDrawer(env, { defaultWidth: 600, minWidth: 420, maxWidthRatio: 0.9 });
+    try {
+      drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+      drawer.setWidth(2000);
+      // 回退 innerWidth=492：hi = min(0.9*492, 492-48) = min(442.8, 444) = 443
+      assert.equal(drawer._appliedWidth, 443, `clientWidth=${layoutWidth} 时应回退 innerWidth`);
+    } finally {
+      safeDestroy(drawer);
+      env.restore();
+    }
+  }
+});
+
+test('MINOR-2: 无滚动条（innerWidth === clientWidth）时宽度口径不变', () => {
+  const env = createEnv({ innerWidth: 1280, clientWidth: 1280 });
+  const drawer = createDrawer(env, { defaultWidth: 600, minWidth: 420, maxWidthRatio: 0.9 });
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    assert.equal(drawer._appliedWidth, 600, 'defaultWidth 未被误改');
+    drawer.setWidth(99999);
+    assert.equal(drawer._appliedWidth, 1152, '宽视口上限仍为 0.9*1280');
+    assert.ok(1280 - 1152 >= 48);
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
 });
 
 /* ================================================================== *

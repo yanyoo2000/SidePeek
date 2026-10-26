@@ -237,6 +237,42 @@ async function runRound({ browserPath, headless }) {
     // -----------------------------------------------------------------
 
     /**
+     * 严谨的抽屉展开态判据。
+     *
+     * 为什么不能只比 left 与 window.innerWidth：
+     *   抽屉是 position:fixed;right:0，其包含块宽度 = documentElement.clientWidth（**不含**
+     *   经典滚动条）；而 window.innerWidth **包含**滚动条（本机约 15px）。关闭态抽屉被
+     *   translateX(100%) 推到 left === clientWidth === 1425，此时 1425 < innerWidth(1440)-10
+     *   恒成立 → 关闭态会被误判成「已展开」（REVIEW-03 §3 的假阳性）。
+     * 因此以 .sp-open 类为主判据（与动画无关、与滚动条无关），再用 clientWidth 做交叉校验。
+     */
+    async function drawerState() {
+      return await evaluate(
+        page,
+        `(() => {
+          const host = document.getElementById('sidepeek-host');
+          const cw = document.documentElement.clientWidth;
+          const iw = window.innerWidth;
+          if (!host || !host.shadowRoot) return { exists: false, open: false, cw, iw };
+          const d = host.shadowRoot.querySelector('.sp-drawer');
+          if (!d) return { exists: true, open: false, cw, iw };
+          const r = d.getBoundingClientRect();
+          const hasOpenClass = d.classList.contains('sp-open');
+          return {
+            exists: true,
+            hasOpenClass,
+            hostOpenAttr: host.getAttribute('data-open'),
+            left: Math.round(r.left),
+            width: Math.round(r.width),
+            cw,
+            iw,
+            open: hasOpenClass && r.width > 200 && r.left < cw - 4
+          };
+        })()`
+      );
+    }
+
+    /**
      * 点击页面上某个视频链接。
      * 为什么要绕这么一圈：B 站首页有自动轮播/懒加载，元素在「测量坐标」与
      * 「真正点击」之间会移位，导致点击落空、用例偶发失败（踩过）。
@@ -333,22 +369,20 @@ async function runRound({ browserPath, headless }) {
         return;
       }
 
-      // B-3：抽屉展开
+      // B-3：抽屉展开（判据见 drawerState 注释：以 .sp-open 为准，不用 innerWidth）
       try {
-        await waitFor(async () => {
-          return await evaluate(
-            page,
-            `(() => {
-              const host = document.getElementById('sidepeek-host');
-              if (!host || !host.shadowRoot) return false;
-              const d = host.shadowRoot.querySelector('.sp-drawer');
-              if (!d) return false;
-              const r = d.getBoundingClientRect();
-              return r.width > 200 && r.left < window.innerWidth - 10;
-            })()`
-          );
-        }, { timeout: 15000, label: prefix + ' 抽屉展开' });
-        report.ok(prefix + '-2', `${name}：点击后抽屉从右侧展开`);
+        const st = await waitFor(
+          async () => {
+            const s = await drawerState();
+            return s && s.open ? s : false;
+          },
+          { timeout: 15000, label: prefix + ' 抽屉展开' }
+        );
+        report.ok(
+          prefix + '-2',
+          `${name}：点击后抽屉从右侧展开`,
+          `sp-open=${st.hasOpenClass} left=${st.left}/${st.cw} width=${st.width}`
+        );
       } catch (e) {
         report.fail(prefix + '-2', `${name}：点击后抽屉未展开`, e.message);
         return;
@@ -440,41 +474,33 @@ async function runRound({ browserPath, headless }) {
         // 等待时长可调：用于验证「B 站剪除前向条目」是否与用户停顿时长相关。
         // 默认 1400ms（接近真实用户的即时操作）；用 SIDEPEEK_BACK_WAIT_MS=5000 可复现站方剪除。
         await sleep(Number(process.env.SIDEPEEK_BACK_WAIT_MS || 1400));
-        const closedAfterBack = await evaluate(
-          page,
-          `(() => {
-            const host = document.getElementById('sidepeek-host');
-            if (!host || !host.shadowRoot) return true;
-            const d = host.shadowRoot.querySelector('.sp-drawer');
-            if (!d) return true;
-            return d.getBoundingClientRect().left >= window.innerWidth - 20;
-          })()`
-        );
+        const stateAfterBack = await drawerState();
+        const closedAfterBack = !stateAfterBack.open;
         const hashAfterBack = await evaluate(page, 'location.hash');
         if (closedAfterBack)
-          report.ok(prefix + '-9', `${name}：后退 → 抽屉关闭`, `hash="${hashAfterBack}"`);
+          report.ok(
+            prefix + '-9',
+            `${name}：后退 → 抽屉关闭`,
+            `sp-open=${stateAfterBack.hasOpenClass} hash="${hashAfterBack}"`
+          );
         else
-          report.fail(prefix + '-9', `${name}：后退后抽屉未关闭`, `hash="${hashAfterBack}"`);
+          report.fail(
+            prefix + '-9',
+            `${name}：后退后抽屉未关闭`,
+            `sp-open=${stateAfterBack.hasOpenClass} hash="${hashAfterBack}"`
+          );
 
         await evaluate(page, 'history.forward(); 1');
         await sleep(1800);
-        const reopened = await evaluate(
-          page,
-          `(() => {
-            const host = document.getElementById('sidepeek-host');
-            if (!host || !host.shadowRoot) return false;
-            const d = host.shadowRoot.querySelector('.sp-drawer');
-            if (!d) return false;
-            return d.getBoundingClientRect().left < window.innerWidth - 10;
-          })()`
-        );
+        const stateAfterFwd = await drawerState();
+        const reopened = stateAfterFwd.open;
         const hashAfterFwd = await evaluate(page, 'location.hash');
         const lenAfterFwd = await evaluate(page, 'history.length');
-        const stateAfterFwd = await evaluate(
+        const peekStateJson = await evaluate(
           page,
           'JSON.stringify(history.state && history.state.__sidepeek ? {peek:1,url:history.state.url} : null)'
         );
-        const landedOnPeekEntry = stateAfterFwd && stateAfterFwd !== 'null';
+        const landedOnPeekEntry = peekStateJson && peekStateJson !== 'null';
 
         if (reopened) {
           report.ok(
@@ -489,14 +515,14 @@ async function runRound({ browserPath, headless }) {
           report.skip(
             prefix + '-10',
             `${name}：前进未生效，但站方已剪除前向条目（对照实验证实为 B 站行为，非扩展缺陷）`,
-            `state=${stateAfterFwd || 'null'} hash="${String(hashAfterFwd).slice(0, 30)}"`
+            `state=${peekStateJson || 'null'} hash="${String(hashAfterFwd).slice(0, 30)}"`
           );
         } else {
           // 历史条目还在我们手上却没重开 —— 这才是真正的回归
           report.fail(
             prefix + '-10',
             `${name}：前进命中了 #sidepeek 条目但抽屉未重开（真实回归）`,
-            `state=${stateAfterFwd} hash="${String(hashAfterFwd).slice(0, 46)}"`
+            `state=${peekStateJson} hash="${String(hashAfterFwd).slice(0, 46)}"`
           );
         }
 
@@ -550,15 +576,13 @@ async function runRound({ browserPath, headless }) {
         await page.send('Runtime.evaluate', { expression: 'document.body.focus(); void 0' });
         await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
         await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
-        await waitFor(async () => {
-          return await evaluate(page, `(() => {
-            const host = document.getElementById('sidepeek-host');
-            if (!host || !host.shadowRoot) return true;
-            const d = host.shadowRoot.querySelector('.sp-drawer');
-            if (!d) return true;
-            return d.getBoundingClientRect().left >= window.innerWidth - 20;
-          })()`);
-        }, { timeout: 8000, label: prefix + ' Esc 关闭' });
+        await waitFor(
+          async () => {
+            const s = await drawerState();
+            return !s.open;
+          },
+          { timeout: 8000, label: prefix + ' Esc 关闭' }
+        );
         report.ok(prefix + '-12', `${name}：Esc 可关闭抽屉`);
       } catch (e) {
         report.fail(prefix + '-12', `${name}：Esc 未能关闭抽屉`, e.message);
@@ -621,7 +645,8 @@ async function main() {
     headless: info.headless,
     screenshots: Object.fromEntries(Object.entries(info).filter(([k]) => k.startsWith('screenshot'))),
     total: report.checks.length,
-    passed: report.checks.filter((c) => c.pass).length,
+    passed: report.checks.filter((c) => c.pass && !c.skipped).length,
+    skipped: report.checks.filter((c) => c.skipped).length,
     failed: report.checks.filter((c) => !c.pass).map((c) => c.id + ' ' + c.title),
     checks: report.checks,
   };
@@ -631,7 +656,10 @@ async function main() {
   console.log('\n============ 真机联调结果 ============');
   console.log('浏览器: ' + summary.browser);
   console.log('扩展 ID: ' + (summary.extensionId || '(未取到)'));
-  console.log(`通过: ${summary.passed}/${summary.total}`);
+  console.log(
+    `通过: ${summary.passed}/${summary.total}` +
+      (summary.skipped ? `  跳过: ${summary.skipped}（原因见报告 checks[].detail）` : '')
+  );
   if (summary.failed.length) {
     console.log('失败项:');
     summary.failed.forEach((f) => console.log('  - ' + f));
