@@ -10,6 +10,8 @@
  *   - M-02 关闭态 inert / 焦点归还顺序
  *   - M-03 F5 后 #sidepeek= 残留自愈
  *   - B-01 拖拽跨 iframe：iframe 命中开关、buttons===0 兜底、blur 收尾、关闭/销毁清拖拽
+ *   - N-01~N-04 拖拽收尾/落盘/iframe 重建/关闭顺序；N-06 自愈 once 护栏
+ *   - N-07 sandbox 守护（MutationObserver 恢复）；N-09 content↔background 路径白名单一致
  *   - destroy 后 document/window 监听净计数为 0
  *   - P-03 / P-05 / P-06 / P-08 / P-16
  *   - I-10 回归：open A → 切 B → 关闭 → 前进重开，history.length 不增长 且 标题回填
@@ -24,6 +26,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -344,6 +347,30 @@ function createEnv(options = {}) {
     }, 0);
   }
 
+  // ---- fake MutationObserver：让 _guardSandbox 这条安全命门分支可在 node 里被覆盖（N-07） ----
+  const mutationObservers = [];
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observed = [];
+      this.disconnected = false;
+      mutationObservers.push(this);
+    }
+    observe(target, options) {
+      this.observed.push({ target, options });
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+    takeRecords() {
+      return [];
+    }
+    /** 测试钩子：手动触发一次回调（模拟 sandbox 属性被外部脚本改写） */
+    __trigger() {
+      if (!this.disconnected) this.callback([], this);
+    }
+  }
+
   const previousGlobals = {
     window: globalThis.window,
     document: globalThis.document,
@@ -355,9 +382,9 @@ function createEnv(options = {}) {
   globalThis.document = documentRef;
   globalThis.location = location;
   globalThis.history = history;
-  // node 里本就没有 MutationObserver；显式删掉，确保 _guardSandbox 走"降级跳过"分支。
+  // 用 fake MutationObserver 替代（真实浏览器里它负责 sandbox 守护）。
   // 注意不要动 globalThis.navigator：Node 21+ 自带只读 getter，赋值会直接抛错。
-  delete globalThis.MutationObserver;
+  globalThis.MutationObserver = FakeMutationObserver;
 
   const env = {
     window: windowRef,
@@ -386,6 +413,7 @@ function createEnv(options = {}) {
     countOf(type, capture) {
       return listenerCounts.get(`${type}|${capture ? 'capture' : 'bubble'}`) || 0;
     },
+    mutationObservers,
     flushRaf() {
       windowRef.__flushRaf();
     },
@@ -684,6 +712,7 @@ test('M-04/I-10 回归：open A → 切 B → 关闭 → 前进重开，history.
  * ================================================================== */
 
 test('M-03: #sidepeek= 与 history.state.__sidepeek 残留会在实例初始化时被清理一次', () => {
+  SidePeekDrawer.__resetHistoryHealGuardForTest(); // N-06：每个用例模拟"文档首次初始化"
   const replaceSpy = [];
   const env = createEnv({
     href: 'https://sidepeek.test/page#sidepeek=https%3A%2F%2Fsidepeek.test%2Fv%2F1',
@@ -702,12 +731,82 @@ test('M-03: #sidepeek= 与 history.state.__sidepeek 残留会在实例初始化�
 });
 
 test('M-03: 没有残留时不碰 history（不抢 B 站 SPA 路由）', () => {
+  SidePeekDrawer.__resetHistoryHealGuardForTest();
   const replaceSpy = [];
   const env = createEnv({ replaceStateSpy: replaceSpy });
   const drawer = createDrawer(env);
   try {
     assert.deepEqual(replaceSpy, []);
     assert.equal(env.history.state, null);
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('N-06: 自愈整个文档生命周期只执行一次，不会清掉后续正在记账的历史条目', () => {
+  SidePeekDrawer.__resetHistoryHealGuardForTest();
+  const env = createEnv({
+    href: 'https://sidepeek.test/page#sidepeek=https%3A%2F%2Fsidepeek.test%2Fv%2F1',
+    initialState: { __sidepeek: 1, url: 'https://sidepeek.test/v/1' }
+  });
+  const first = createDrawer(env);
+  try {
+    assert.equal(env.location.hash, '', '首次初始化应清掉残留');
+
+    // 模拟"抽屉已经打开、正在记账"的活条目（页面运行期绝不能再被自愈清掉）
+    env.history.pushState(
+      { __sidepeek: 1, url: 'https://sidepeek.test/v/live' },
+      '',
+      env.location.href.split('#')[0] + '#sidepeek=' + encodeURIComponent('https://sidepeek.test/v/live')
+    );
+    const liveHash = env.location.hash;
+    const liveState = env.history.state;
+
+    const second = createDrawer(env); // 第二个实例（测试 / 未来热重载）
+    try {
+      assert.equal(env.location.hash, liveHash, 'once 护栏：第二次构造不得再清理');
+      assert.deepEqual(env.history.state, liveState);
+    } finally {
+      safeDestroy(second);
+    }
+  } finally {
+    safeDestroy(first);
+    env.restore();
+  }
+});
+
+/* ================================================================== *
+ * 7.1 N-07：sandbox 守护（_guardSandbox）
+ * ================================================================== */
+
+test('N-07: sandbox 被外部改写/移除时，_guardSandbox 会恢复成内置组合', async () => {
+  const env = createEnv();
+  const drawer = createDrawer(env);
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    await tick(20);
+
+    const frameEl = shadowEl(env, 'sp-frame');
+    const observer = env.mutationObservers[env.mutationObservers.length - 1];
+    assert.ok(observer, '应创建 MutationObserver 守护 sandbox');
+    assert.equal(observer.observed[0].target, frameEl);
+    assert.deepEqual(observer.observed[0].options.attributeFilter, ['sandbox']);
+
+    // 外部脚本放宽（含顶层导航 token）→ 必须恢复
+    frameEl.setAttribute('sandbox', `${SidePeekDrawer.SANDBOX} allow-top-navigation`);
+    observer.__trigger();
+    assert.equal(frameEl.getAttribute('sandbox'), SidePeekDrawer.SANDBOX);
+
+    // 大小写变体也要识别
+    frameEl.setAttribute('sandbox', `Allow-Top-Navigation ${SidePeekDrawer.SANDBOX}`);
+    observer.__trigger();
+    assert.equal(frameEl.getAttribute('sandbox'), SidePeekDrawer.SANDBOX);
+
+    // 整个属性被移除 → 必须恢复
+    frameEl.removeAttribute('sandbox');
+    observer.__trigger();
+    assert.equal(frameEl.getAttribute('sandbox'), SidePeekDrawer.SANDBOX);
   } finally {
     safeDestroy(drawer);
     env.restore();
@@ -777,6 +876,133 @@ test('B-01: 拖拽开始关闭 iframe 命中，结束/关闭/销毁都会还原'
     assert.equal(drawer._drag, null, '_hide 必须结束拖拽');
     assert.equal(env.documentElement.style.cursor, '');
     assert.equal(frameEl.style.pointerEvents, '');
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+/* ================================================================== *
+ * 8.1 N-01 / N-02 / N-03 / N-04：拖拽收尾、落盘、iframe 重建、关闭顺序
+ * ================================================================== */
+
+test('N-01: 松手时先同步 flush 待执行 rAF 再落盘（宽度不回退、persist 值不偏）', async () => {
+  const env = createEnv();
+  const persist = [];
+  const drawer = createDrawer(env, { persistWidth: (px) => persist.push(px) });
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    await tick(20);
+
+    drawer._handleDragStart({ button: 0, clientX: 900, preventDefault() {}, stopPropagation() {} });
+    drawer._handleDragMove({ buttons: 1, clientX: 700 }); // 只排进 rAF，尚未应用
+    assert.equal(drawer._appliedWidth, 600, 'rAF 未 flush 前样式宽度还是旧值');
+
+    drawer._handleDragEnd(); // 松手：必须先补算最后一帧再落盘
+    assert.equal(drawer._width, 800, '松手必须补算 900-700=200 的位移');
+    assert.equal(drawer._appliedWidth, 800, '松手后视觉宽度不得回退');
+    assert.deepEqual(persist, [800], 'persistWidth 必须是最终宽度，不能偏小');
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('N-02: mouseup 丢失（buttons===0 兜底）也会把这次拖拽的宽度落盘', async () => {
+  const env = createEnv();
+  const persist = [];
+  const drawer = createDrawer(env, { persistWidth: (px) => persist.push(px) });
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    await tick(20);
+
+    drawer._handleDragStart({ button: 0, clientX: 900, preventDefault() {}, stopPropagation() {} });
+    drawer._handleDragMove({ buttons: 1, clientX: 700 });
+    drawer._handleDragMove({ buttons: 0, clientX: 650 }); // mouseup 丢了：下一次无按键移动
+
+    assert.equal(drawer._drag, null);
+    assert.deepEqual(persist, [800], '兜底路径也必须持久化最终宽度');
+    assert.equal(env.documentElement.style.cursor, '');
+    assert.equal(shadowEl(env, 'sp-frame').style.pointerEvents, '');
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('N-03: 拖拽中切 URL（重建 iframe）后，新节点仍然不可命中', async () => {
+  const env = createEnv();
+  const drawer = createDrawer(env);
+  try {
+    drawer.open('https://sidepeek.test/v/A', { title: 'A' });
+    await tick(20);
+    const frameA = shadowEl(env, 'sp-frame');
+
+    drawer._handleDragStart({ button: 0, clientX: 900, preventDefault() {}, stopPropagation() {} });
+    assert.equal(frameA.style.pointerEvents, 'none');
+
+    drawer.open('https://sidepeek.test/v/B', { title: 'B' }); // 重建 iframe
+    const frameB = shadowEl(env, 'sp-frame');
+    assert.notEqual(frameB, frameA, '切 URL 应重建 iframe 节点');
+    assert.equal(frameB.style.pointerEvents, 'none', 'N-03：新节点必须补上不可命中');
+    assert.equal(drawer._drag !== null, true, '拖拽态不应被换页打断');
+
+    drawer._handleDragEnd();
+    assert.equal(frameB.style.pointerEvents, '', '松手后恢复命中策略');
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('N-04: _hide 顺序 = 先还焦点 → 置 inert → 再 aria-hidden', async () => {
+  const env = createEnv();
+  const drawer = createDrawer(env);
+  try {
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    await tick(20);
+    const drawerEl = shadowEl(env, 'sp-drawer');
+    const order = [];
+
+    const realRestore = drawer._restoreFocus.bind(drawer);
+    drawer._restoreFocus = function restoreSpy() {
+      order.push('restore-focus');
+      return realRestore();
+    };
+    const realSet = drawerEl.setAttribute.bind(drawerEl);
+    drawerEl.setAttribute = function setSpy(name, value) {
+      if (name === 'inert' || name === 'aria-hidden') order.push(`attr:${name}`);
+      return realSet(name, value);
+    };
+
+    drawer._hide();
+    assert.deepEqual(order, ['restore-focus', 'attr:inert', 'attr:aria-hidden']);
+  } finally {
+    safeDestroy(drawer);
+    env.restore();
+  }
+});
+
+test('N-04b: 上一个焦点不可聚焦（focus() 是 no-op）时，显式 blur 抽屉内焦点', async () => {
+  const env = createEnv();
+  const drawer = createDrawer(env);
+  try {
+    // 模拟 <body> 这类不可聚焦元素：focus() 是 no-op
+    const bodyEl = env.body;
+    bodyEl.focus = function noopFocus() {};
+    env.document.activeElement = bodyEl;
+
+    drawer.open('https://sidepeek.test/v/1', { title: 'A' });
+    await tick(20);
+    assert.equal(env.document.activeElement, shadowEl(env, 'sp-drawer'));
+
+    let blurCalls = 0;
+    shadowEl(env, 'sp-drawer').blur = function blurSpy() {
+      blurCalls += 1;
+    };
+
+    drawer._hide();
+    assert.equal(blurCalls, 1, '焦点不可归还时必须显式 blur，避免 aria-hidden 被 Chrome 拦掉');
   } finally {
     safeDestroy(drawer);
     env.restore();
@@ -927,4 +1153,74 @@ test('P-15: node scripts/check-css-sync.mjs 可执行且当前 CSS 一致', () =
     encoding: 'utf8'
   });
   assert.match(output, /CSS in sync \(\d+ bytes\)/);
+});
+
+/* ================================================================== *
+ * 13. N-09：content.js ↔ background.js 路径白名单行为一致性
+ * ================================================================== */
+
+function loadContentTestApi() {
+  const sandbox = { console, URL, URLSearchParams };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(CONTENT_PATH, 'utf8'), sandbox, { filename: 'src/content.js' });
+  return sandbox.__SIDEPEEK_TEST__;
+}
+
+function loadBackgroundTestApi() {
+  const sandbox = { console, URL };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src', 'background.js'), 'utf8'), sandbox, {
+    filename: 'src/background.js'
+  });
+  return sandbox.__SIDEPEEK_TEST_BG__;
+}
+
+test('N-09: content 的 PEEK_PATH_PATTERNS 与 background 的 PEEK_PATH_RE 行为一致', () => {
+  const contentApi = loadContentTestApi();
+  const backgroundApi = loadBackgroundTestApi();
+  assert.ok(contentApi && typeof contentApi.classifyPeekPath === 'function');
+  // 注意：vm 跨 realm，instanceof RegExp 会判 false，用 toString 判类型
+  assert.equal(Object.prototype.toString.call(backgroundApi && backgroundApi.PEEK_PATH_RE), '[object RegExp]');
+
+  const pathnames = [
+    // 正例：四类白名单
+    '/video/BV1xx411c7mD',
+    '/video/BV1xx411c7mD/',
+    '/video/av170001',
+    '/bangumi/play/ep123456',
+    '/bangumi/play/ss12345',
+    '/cheese/play/ep123',
+    '/list/ml1234567',
+    '/list/pl123',
+    // 反例 / 边界
+    '/',
+    '/video/',
+    '/video/BV123',
+    '/video/av',
+    '/bangumi/media/md123',
+    '/bangumi/play/md123',
+    '/cheese/play/',
+    '/list/',
+    '/list/abc1',
+    '/read/cv123456',
+    '/search/all',
+    '/space/123456',
+    ''
+  ];
+
+  for (const pathname of pathnames) {
+    const contentHit = !!contentApi.classifyPeekPath(pathname);
+    const backgroundHit = backgroundApi.PEEK_PATH_RE.test(pathname);
+    assert.equal(contentHit, backgroundHit, `content 与 background 对路径 ${JSON.stringify(pathname)} 判定不一致`);
+  }
+
+  // 明确断言几个关键正例两侧都放行、几个关键反例两侧都拒绝
+  for (const pathname of ['/video/BV1xx411c7mD', '/bangumi/play/ep1', '/cheese/play/ss1', '/list/ml1']) {
+    assert.equal(contentApi.classifyPeekPath(pathname) !== null, true, pathname);
+    assert.equal(backgroundApi.PEEK_PATH_RE.test(pathname), true, pathname);
+  }
+  for (const pathname of ['/read/cv1', '/search/all', '/']) {
+    assert.equal(contentApi.classifyPeekPath(pathname), null, pathname);
+    assert.equal(backgroundApi.PEEK_PATH_RE.test(pathname), false, pathname);
+  }
 });

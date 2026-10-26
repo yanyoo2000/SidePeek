@@ -8,3 +8,5 @@ Thumbs.db
 *.log
 tests/e2e/artifacts/
 tests/integration/.tmp/
+tests/e2e/dist/
+

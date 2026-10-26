@@ -247,6 +247,12 @@ MINOR 本轮修：P-03（同页判定不一致吞点击）、P-05（`_closePendi
 P-07（sandbox 大小写绕过）、P-08（textarea 残留）、P-09（全屏静默死点）、P-13（http 混合内容）、
 P-15/P-16（CSS 同步脚本加固 + 跨文件常量一致性）、P-17（死参数/魔法数字）。
 
+**契约变更（N-11）**：`aria-modal` 属性已从抽屉移除。
+原因：本实现没有焦点陷阱，宣称 `aria-modal="true"` 会与「键盘可自由跑回被遮罩盖住的页面」自相矛盾。
+收起态改用 `inert` + `_restoreFocus()` 保证键盘可达性正确。
+因此 PRD I-20 中「`aria-modal="true"`」一条**不再适用**，验收时不得据此判为缺陷；
+`role="dialog"` 与 `aria-label` 保留。
+
 #### 8.2 书面豁免（不修，必须记录，不得静默忽略）
 
 | 项 | 裁决 | 理由 |
@@ -271,3 +277,24 @@ SPEC 3.1 的 DOM 树为**最小必需结构**，实现允许附带以下辅助�
 - `.sp-toast`（操作反馈）
 - `.sp-error-sub`、`.sp-error-actions`（错误态说明与操作区）
 - 错误态内的重试/打开新标签按钮（重试按钮须带 `data-act="retry"`）
+
+#### 8.5 G-09 实测结论：三类非 video 路径均可嵌入（Lead 真机验证）
+
+G-09 原本是「正则覆盖了 bangumi/cheese/list，但只实测过 `/video/`」的悬空风险。已用真实内容实测完毕：
+
+**方法**：在跨源宿主 `search.bilibili.com` 上同时创建 3 个带限制性 sandbox 的 iframe，
+分别指向三类真实链接，等待 14 秒后检查宿主 URL 是否被改写 + 截图确认渲染。
+
+| 路径类型 | 实测 URL | 结果 |
+|---|---|---|
+| `bangumi/play` | `https://www.bilibili.com/bangumi/play/ss1588` | ✅ 正常渲染（番剧播放器 + 弹幕 + 正片 1/22） |
+| `cheese/play` | `https://www.bilibili.com/cheese/play/ep2014561` | ✅ 正常渲染（课堂课程页） |
+| `list/ml` | `https://www.bilibili.com/list/ml4057598311` | ✅ 正常渲染（播放列表/合集页 + 播放器） |
+
+**结论**：
+1. 三类均**未触发 frame-buster**，宿主 URL 保持不变；
+2. 三类页面均真实渲染，不是错误页 —— 因此不存在「白名单放行但实际打不开」的静默死点；
+3. **白名单保持现状**，`content.js` 里的 `bestEffort` 标注可以更新为「已实测通过」。
+
+> 注意：这验证的是「能否被 sandbox iframe 承载」。
+> 仍不能保证 B 站未来改版后不变，故 `classifyPeekPath` 作为单一收窄点的设计保留。

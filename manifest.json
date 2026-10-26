@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "102",
   "name": "SidePeek",
   "version": "0.1.0",
   "description": "点视频不再丢页面 —— 在 B 站右侧抽屉里速览视频，看完关掉，原页面滚动位置和搜索结果都还在。",

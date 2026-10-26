@@ -326,6 +326,7 @@ async function runRound({ browserPath, headless }) {
       // `#sidepeek=<encoded>` 用于历史记账，这属于预期行为，不是 frame-buster。
       // 真正的 frame-buster 会改变 origin / pathname / search。
       const before = await evaluate(page, 'location.href.split("#")[0]');
+      const lenBefore = await evaluate(page, 'history.length');
       const clicked = await clickSomeVideoLink();
       if (!clicked.ok) {
         report.fail(prefix + '-2', `${name}：无法稳定点击到视频链接`, clicked.reason || '');
@@ -425,7 +426,66 @@ async function runRound({ browserPath, headless }) {
         info['screenshot' + prefix] = file;
       } catch { /* ignore */ }
 
-      // B-8：Esc 关闭（焦点需在顶层文档）
+      // B-8：I-10 历史回归（N-08）—— 后退关闭 / 前进重开，且 history.length 不增长
+      // 注意顺序：这段必须在 Esc 关闭之前做，因为 Esc 内部也会 history.back()，
+      // 之后再 back() 就会退到 bilibili 之外的页面，把场景弄坏。
+      try {
+        const lenAfterOpen = await evaluate(page, 'history.length');
+        if (lenAfterOpen === lenBefore + 1)
+          report.ok(prefix + '-8', `${name}：打开抽屉正确新增 1 条历史`, `${lenBefore} → ${lenAfterOpen}`);
+        else
+          report.fail(prefix + '-8', `${name}：打开抽屉的历史条目数异常`, `${lenBefore} → ${lenAfterOpen}（期望 +1）`);
+
+        await evaluate(page, 'history.back(); 1');
+        await sleep(1400);
+        const closedAfterBack = await evaluate(
+          page,
+          `(() => {
+            const host = document.getElementById('sidepeek-host');
+            if (!host || !host.shadowRoot) return true;
+            const d = host.shadowRoot.querySelector('.sp-drawer');
+            if (!d) return true;
+            return d.getBoundingClientRect().left >= window.innerWidth - 20;
+          })()`
+        );
+        const hashAfterBack = await evaluate(page, 'location.hash');
+        if (closedAfterBack)
+          report.ok(prefix + '-9', `${name}：后退 → 抽屉关闭`, `hash="${hashAfterBack}"`);
+        else
+          report.fail(prefix + '-9', `${name}：后退后抽屉未关闭`, `hash="${hashAfterBack}"`);
+
+        await evaluate(page, 'history.forward(); 1');
+        await sleep(1800);
+        const reopened = await evaluate(
+          page,
+          `(() => {
+            const host = document.getElementById('sidepeek-host');
+            if (!host || !host.shadowRoot) return false;
+            const d = host.shadowRoot.querySelector('.sp-drawer');
+            if (!d) return false;
+            return d.getBoundingClientRect().left < window.innerWidth - 10;
+          })()`
+        );
+        const hashAfterFwd = await evaluate(page, 'location.hash');
+        const lenAfterFwd = await evaluate(page, 'history.length');
+        if (reopened)
+          report.ok(prefix + '-10', `${name}：前进 → 抽屉重新打开`, `hash="${String(hashAfterFwd).slice(0, 46)}"`);
+        else
+          report.fail(prefix + '-10', `${name}：前进后抽屉未重新打开`, `hash="${String(hashAfterFwd).slice(0, 46)}"`);
+
+        if (lenAfterFwd === lenAfterOpen)
+          report.ok(prefix + '-11', `${name}：back/forward 往返后 history.length 未增长`, `${lenAfterFwd}`);
+        else
+          report.fail(
+            prefix + '-11',
+            `${name}：history.length 在往返中增长（joint session history 被污染）`,
+            `open=${lenAfterOpen} forward=${lenAfterFwd}`
+          );
+      } catch (e) {
+        report.fail(prefix + '-8', `${name}：历史回归异常`, e.message);
+      }
+
+      // B-12：Esc 关闭（焦点需在顶层文档）
       try {
         await page.send('Runtime.evaluate', { expression: 'document.body.focus(); void 0' });
         await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
@@ -439,9 +499,9 @@ async function runRound({ browserPath, headless }) {
             return d.getBoundingClientRect().left >= window.innerWidth - 20;
           })()`);
         }, { timeout: 8000, label: prefix + ' Esc 关闭' });
-        report.ok(prefix + '-8', `${name}：Esc 可关闭抽屉`);
+        report.ok(prefix + '-12', `${name}：Esc 可关闭抽屉`);
       } catch (e) {
-        report.fail(prefix + '-8', `${name}：Esc 未能关闭抽屉`, e.message);
+        report.fail(prefix + '-12', `${name}：Esc 未能关闭抽屉`, e.message);
       }
     }
 

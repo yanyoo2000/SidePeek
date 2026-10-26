@@ -6,8 +6,8 @@
     "screenshotC": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-c.png",
     "screenshotD": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-d.png"
   },
-  "total": 18,
-  "passed": 18,
+  "total": 26,
+  "passed": 26,
   "failed": [],
   "checks": [
     {
@@ -54,7 +54,7 @@
       "id": "C-6",
       "title": "同源（首页）：iframe 已加载视频页",
       "pass": true,
-      "detail": "https://www.bilibili.com/video/BV1BBnb6aEww?track_id="
+      "detail": "https://www.bilibili.com/video/BV1NDnR6JEAX?track_id="
     },
     {
       "id": "C-7",
@@ -64,6 +64,30 @@
     },
     {
       "id": "C-8",
+      "title": "同源（首页）：打开抽屉正确新增 1 条历史",
+      "pass": true,
+      "detail": "2 → 3"
+    },
+    {
+      "id": "C-9",
+      "title": "同源（首页）：后退 → 抽屉关闭",
+      "pass": true,
+      "detail": "hash=\"\""
+    },
+    {
+      "id": "C-10",
+      "title": "同源（首页）：前进 → 抽屉重新打开",
+      "pass": true,
+      "detail": "hash=\"#sidepeek=https%3A%2F%2Fwww.bilibili.com%2Fvid\""
+    },
+    {
+      "id": "C-11",
+      "title": "同源（首页）：back/forward 往返后 history.length 未增长",
+      "pass": true,
+      "detail": "3"
+    },
+    {
+      "id": "C-12",
       "title": "同源（首页）：Esc 可关闭抽屉",
       "pass": true
     },
@@ -109,6 +133,30 @@
     },
     {
       "id": "D-8",
+      "title": "跨源（搜索页）：打开抽屉正确新增 1 条历史",
+      "pass": true,
+      "detail": "3 → 4"
+    },
+    {
+      "id": "D-9",
+      "title": "跨源（搜索页）：后退 → 抽屉关闭",
+      "pass": true,
+      "detail": "hash=\"\""
+    },
+    {
+      "id": "D-10",
+      "title": "跨源（搜索页）：前进 → 抽屉重新打开",
+      "pass": true,
+      "detail": "hash=\"\""
+    },
+    {
+      "id": "D-11",
+      "title": "跨源（搜索页）：back/forward 往返后 history.length 未增长",
+      "pass": true,
+      "detail": "4"
+    },
+    {
+      "id": "D-12",
       "title": "跨源（搜索页）：Esc 可关闭抽屉",
       "pass": true
     }

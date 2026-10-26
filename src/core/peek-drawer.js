@@ -12,7 +12,9 @@
  *
  * 样式来源说明：content script 无法同步读取 .css 文件，所以这里内嵌一份 CSS 字符串；
  * src/core/peek-drawer.css 是同一份内容的人类可读副本。改一处必须改另一处
- * （dev-core 用脚本逐字比对，避免漂移）。需要主题覆盖时可在构造参数里传 options.css。
+ * （scripts/check-css-sync.mjs 逐字比对，避免漂移）。
+ * 样式唯一来源就是内嵌的 CSS_TEXT —— 不接受宿主页面或 options.css 注入
+ * （P-06 已删除那条未授权通道，避免页面脚本借样式改写抽屉）。
  */
 ;(function () {
   'use strict';
@@ -516,6 +518,14 @@
   }
 
   /**
+   * N-06：整个文档生命周期只自愈一次。
+   * 为什么需要护栏：多实例（测试环境 / 将来热重载 / 适配层重复构造）时，
+   * 第二次构造会对着「用户刚刚打开抽屉、正在记账的那条历史条目」再做一次 replaceState，
+   * 把活状态清掉。所以用模块级标记保证 heal 只发生一次。
+   */
+  var historyResidueHealed = false;
+
+  /**
    * M-03 / PRD I-27：F5 刷新后的残留自愈。
    *
    * 抽屉打开时会把地址栏改成 `...#sidepeek=<url>` 并压一条 `state.__sidepeek`。
@@ -524,6 +534,8 @@
    * 这里在实例初始化时清理一次：只在确实有残留时 replaceState，不碰 B 站 SPA 的正常路由。
    */
   function healHistoryResidue() {
+    if (historyResidueHealed) return;
+    historyResidueHealed = true;
     try {
       if (typeof location === 'undefined' || typeof history === 'undefined' || !history.replaceState) return;
       var hashResidue = typeof location.hash === 'string' && /#sidepeek=/.test(location.hash);
@@ -797,8 +809,9 @@
     frame.setAttribute('sandbox', this._sandbox);
 
     // allow 是另一套（Permissions Policy）机制：只放行播放器需要的，和顶层导航无关。
+    // 不再同时写 allowfullscreen —— Chrome 会警告 "Allow attribute will take precedence over allowfullscreen"，
+    // allow="... fullscreen" 本身就是现行标准写法。
     frame.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
-    frame.setAttribute('allowfullscreen', '');
 
     frame.addEventListener('load', this._handleFrameLoad);
     frame.addEventListener('error', this._handleFrameError);
@@ -874,6 +887,9 @@
       this._frame = this._createFrame();
       this._body.insertBefore(this._frame, this._body.firstChild);
       this._frame.setAttribute('src', url);
+      // N-03：拖拽中切 URL 会重建节点，新 iframe 必须立刻补上"不可命中"，
+      // 否则指针会重新落进 iframe、mouseup 再次丢失，拖拽卡死。
+      if (this._drag) this._frame.style.pointerEvents = 'none';
       this._frameReady = false;
       this._showLoading(true);
       this._guardSandbox();
@@ -894,7 +910,7 @@
   };
 
   SidePeekDrawer.prototype._handleFrameLoad = function () {
-    // 关闭后把 iframe 置 about:blank 也触发 load，这种"内部清理"不算加载成功
+    // 关闭/销毁期间 iframe 可能已被移除，迟到的 load 事件不应被当成"加载成功"
     if (!this._open) return;
     this._frameReady = true;
     this._clearLoadTimer();
@@ -1280,13 +1296,14 @@
     if (this._host) this._host.removeAttribute('data-open'); // 遮罩淡出，同时让出 pointer-events
     if (this._toastEl) this._toastEl.classList.remove('sp-visible');
 
-    // M-02 顺序：**先把焦点还回页面**，再给抽屉子树置 aria-hidden / inert。
-    // 反过来做会触发 Chrome 的 "Blocked aria-hidden ... descendant retained focus" 警告，
-    // 而且 inert 会直接吞掉焦点，键盘用户会突然"失去位置"。
+    // M-02 / N-04 顺序：先把焦点还回页面，再把子树置 inert，最后才 aria-hidden。
+    // 为什么这个顺序：_prevFocus 可能是不可聚焦元素（如 body），还焦点不一定成功；
+    // 如果先 aria-hidden，Chrome 会因「子树里仍有焦点」直接拦掉并打 "Blocked aria-hidden" 警告。
+    // 先 inert 会把残留焦点安全地移出子树，再设 aria-hidden 就不会被拦。
     this._restoreFocus();
     if (this._drawer) {
-      this._drawer.setAttribute('aria-hidden', 'true');
       this._drawer.setAttribute('inert', '');
+      this._drawer.setAttribute('aria-hidden', 'true');
     }
 
     this._scheduleUnload();
@@ -1517,8 +1534,9 @@
 
     // B-01 第二步：mouseup 在 iframe 内丢失时的兜底 —— 无按键的 mousemove 说明这次拖拽已经结束。
     // 不判 buttons 的话，用户松开后单纯移动鼠标仍会持续改宽度，且 cursor/user-select 永久留在页面上。
+    // N-02：这条"丢失 mouseup"的路径同样要落盘宽度，否则这次拖拽的宽度记不住。
     if (event.buttons === 0) {
-      this._endDrag();
+      this._commitDragWidth();
       return;
     }
 
@@ -1543,12 +1561,31 @@
     this._renderWidth();
   };
 
-  SidePeekDrawer.prototype._handleDragEnd = function () {
+  /**
+   * 结束一次拖拽并落盘最终宽度（N-01 / N-02）。
+   *
+   * N-01：若还有未执行的 rAF，必须**先同步算一次最终宽度**再落盘 ——
+   *       否则松手瞬间会丢掉最后一帧的位移（宽度回退 ≤1 帧、持久化值比用户看到的小一点）。
+   * N-02：mouseup 丢失（buttons===0 兜底）时也走这里，保证这次拖拽的宽度能被记住。
+   */
+  SidePeekDrawer.prototype._commitDragWidth = function () {
     if (!this._drag) return;
+
+    if (this._dragRaf) {
+      this._cancelRaf(this._dragRaf);
+      this._dragRaf = 0;
+      this._applyDragWidth(); // 用当前最新的 lastClientX 补算最后一帧
+    }
+
     var applied = this._appliedWidth;
     this._endDrag(); // 先摘监听、还原样式与 iframe 命中
     // 持久化交给适配层（core 不碰 chrome.storage）
     if (applied > 0 && isFn(this._opts.persistWidth)) this._safeCall('persistWidth', [applied]);
+  };
+
+  /** mouseup / window.blur 的统一入口：都视为"松手"，走同一套收尾 + 落盘。 */
+  SidePeekDrawer.prototype._handleDragEnd = function () {
+    this._commitDragWidth();
   };
 
   /**
@@ -1675,15 +1712,35 @@
   SidePeekDrawer.prototype._restoreFocus = function () {
     var previous = this._prevFocus;
     this._prevFocus = null;
-    if (!previous || !isFn(previous.focus)) return;
-    if (previous.isConnected === false) return;
-    try {
-      previous.focus({ preventScroll: true });
-    } catch (error) {
+
+    if (previous && isFn(previous.focus) && previous.isConnected !== false) {
       try {
-        previous.focus();
-      } catch (error2) {
-        /* 忽略 */
+        previous.focus({ preventScroll: true });
+      } catch (error) {
+        try {
+          previous.focus();
+        } catch (error2) {
+          /* 忽略 */
+        }
+      }
+    }
+
+    // N-04：上一个焦点元素可能根本不可聚焦（最典型是 <body>，focus() 对它是 no-op），
+    // 此时焦点其实还留在抽屉子树里。随后设置 aria-hidden 会被 Chrome 拦掉并打印
+    // "Blocked aria-hidden ... descendant retained focus"。所以这里显式 blur 掉抽屉内的焦点，
+    // 保证接下来的 inert / aria-hidden 一定能生效（顺序见 _hide）。
+    var shadowActive = this._shadow && this._shadow.activeElement;
+    var topActive = typeof document !== 'undefined' ? document.activeElement : null;
+    var focusedInsideDrawer = !!shadowActive || topActive === this._drawer || (!!this._host && topActive === this._host);
+    if (!focusedInsideDrawer) return;
+
+    var target = shadowActive || (topActive === this._drawer ? this._drawer : null);
+    if (!target || !isFn(target.blur)) target = this._drawer;
+    if (target && isFn(target.blur)) {
+      try {
+        target.blur();
+      } catch (error) {
+        /* 忽略：blur 失败也不影响后续 inert */
       }
     }
   };
@@ -1717,6 +1774,12 @@
   SidePeekDrawer.FORBIDDEN_SANDBOX_TOKENS = FORBIDDEN_SANDBOX_TOKENS;
   SidePeekDrawer.DEFAULT_OPTIONS = DEFAULTS;
   SidePeekDrawer.CSS_TEXT = CSS_TEXT;
+
+  // 测试专用：重置「整个文档只自愈一次」的模块级护栏（N-06）。
+  // 生产代码没有调用方；node 单测需要在每个用例里重新模拟"首次初始化"。
+  SidePeekDrawer.__resetHistoryHealGuardForTest = function () {
+    historyResidueHealed = false;
+  };
 
   // ── 挂全局 ──────────────────────────────────────────────────────────────
 

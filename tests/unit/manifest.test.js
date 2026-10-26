@@ -33,6 +33,12 @@ test('manifest: MV3 基础字段', () => {
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(typeof manifest.description, 'string');
   assert.ok(manifest.description.length > 0);
+
+  // N-05：M-02 的关闭态 inert 需要 Chrome 102+，声明最低版本避免旧浏览器退化体验。
+  assert.equal(typeof manifest.minimum_chrome_version, 'string');
+  const minimumChrome = Number.parseInt(manifest.minimum_chrome_version, 10);
+  assert.equal(Number.isInteger(minimumChrome), true);
+  assert.ok(minimumChrome >= 102, `minimum_chrome_version 应 >= 102，实际 ${manifest.minimum_chrome_version}`);
 });
 
 test('manifest: 权限最小化（只 storage + B 站 host_permissions）', () => {
