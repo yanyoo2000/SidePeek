@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.zip
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+tests/e2e/artifacts/
