@@ -105,6 +105,9 @@ test('package.json: 只用 node --test 跑单测 + CSS 防漂移检查，不引�
   // G-01 裁决：CSS 防漂移检查必须纳入 npm test（脚本由 dev-core 提供）
   assert.equal(pkg.scripts['test:css'], 'node scripts/check-css-sync.mjs');
   assert.match(pkg.scripts.test, /scripts\/check-css-sync\.mjs/);
+  // T7 真机联调脚本入口（脚本由 Lead 提供，tests/integration/ 不归本任务改）
+  assert.equal(pkg.scripts['test:real'], 'node tests/integration/real-extension-check.mjs');
+  assert.equal(pkg.scripts['test:all'], 'npm test && npm run test:real');
   assert.equal(pkg.devDependencies, undefined);
   assert.equal(pkg.dependencies, undefined);
 });

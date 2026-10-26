@@ -235,3 +235,39 @@ dev-core 在实现过程中发现 `iframe.src` 变更会污染 **joint session h
 
 **后续约束**：任何再动 iframe 生命周期的改动，必须回归验证 I-10（后退关闭 + 前进重开）与
 `history.length` 不增长，否则视为回归。
+
+### 第 8 节 评审裁决（针对 docs/reviews/REVIEW-01.md）
+
+#### 8.1 需修复（已派单，见任务板）
+
+B-01（拖拽跨 iframe）、M-02（关闭态 Tab 可聚焦）、M-03（F5 后 hash 残留）、M-04（前进重开标题不回填）、
+M-01（core 零单测 + 集成脚本进 npm test）—— 全部**采纳并修复**。
+
+MINOR 本轮修：P-03（同页判定不一致吞点击）、P-05（`_closePending` 未复位）、P-06（删除未授权样式通道）、
+P-07（sandbox 大小写绕过）、P-08（textarea 残留）、P-09（全屏静默死点）、P-13（http 混合内容）、
+P-15/P-16（CSS 同步脚本加固 + 跨文件常量一致性）、P-17（死参数/魔法数字）。
+
+#### 8.2 书面豁免（不修，必须记录，不得静默忽略）
+
+| 项 | 裁决 | 理由 |
+|---|---|---|
+| **M-05 暗色 token（PRD I-19）** | **v0.1 不做，豁免** | 抽屉服务于"看视频"，固定深色皮肤在亮/暗页面下都成立，且与视频播放器的深色语境一致。切换 token 体系的成本/收益比低。**同时要求 dev-core 删掉从未被赋值的死 token `--sp-width`**，避免误导。I-19 从 WBS 移出，改为 v0.2 候选。 |
+| **P-04 joint history 多条目** | **记为已知限制** | 跨源 iframe 内部导航必然向联合历史追加子帧条目，父页面无权干预。G-10 兜底已保证"抽屉能关、hash 能清"。写入 README/USAGE 已知限制，QA 追加实测结论。 |
+| **P-10 300ms 去抖（PRD I-21）** | **v0.1 不做** | 抽屉展开后遮罩会吃掉页面点击，实际触发路径几乎不存在；纯脚本触发才会看到 loading 闪烁。v0.1.1 候选。 |
+| **P-14 拖拽条键盘可操作** | **v0.1 不做** | WAI-ARIA splitter 的完整键盘支持超出首发范围；已知限制里写明"调宽度需要鼠标"。 |
+| **P-17-c `stopImmediatePropagation`** | **不采纳** | 改成 `stopImmediatePropagation` 会打断 B 站自身的 Esc 快捷键，弊大于利。保留 `stopPropagation`，把注释措辞改准确即可。 |
+
+#### 8.3 评审中经核实**不成立**的两条
+
+| 评审主张 | 核实结果 |
+|---|---|
+| M-01「`real-extension-check.mjs` 只跑同源首页，缺跨源 search 场景」 | **不成立**。当前脚本含 C（首页，同源）与 D（search.bilibili.com → www，**跨源**）两个场景。证据：`docs/qa-assets/real-extension-report.json` 中 checks 为 `A,B,C-1..C-8,D-1..D-8`，`total=18 passed=18`。评审时读到的是脚本重跑前的旧报告。 |
+| 提醒「real-extension-report.json 含 C-2 FAIL，是过期证据」 | **已修正**。该文件在 T7 定稿重跑后已被覆盖为 18/18 全绿，可作当前验收依据。 |
+
+#### 8.4 契约补白（P-12）
+
+SPEC 3.1 的 DOM 树为**最小必需结构**，实现允许附带以下辅助节点，评审不得据此判为结构偏离：
+
+- `.sp-toast`（操作反馈）
+- `.sp-error-sub`、`.sp-error-actions`（错误态说明与操作区）
+- 错误态内的重试/打开新标签按钮（重试按钮须带 `data-act="retry"`）

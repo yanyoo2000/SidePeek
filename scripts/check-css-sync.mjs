@@ -50,7 +50,24 @@ function extractEmbeddedCss(jsSource) {
     throw new Error(`在 ${path.relative(ROOT, JS_FILE)} 里 CSS_TEXT 的模板字符串没有闭合（找不到 \`;）`);
   }
 
-  return jsSource.slice(bodyStart, end);
+  const embedded = jsSource.slice(bodyStart, end);
+
+  // P-15 加固：模板串一旦含反引号或 ${...}，要么让上面的定位失效、要么在运行时被插值改写，
+  // 两种都会让「内嵌副本」和 .css 文件悄悄不一致，必须直接 fail。
+  if (embedded.includes('`')) {
+    throw new Error('CSS_TEXT 里出现了反引号（`），脚本无法可靠定位模板串结束位置');
+  }
+  if (embedded.includes('${')) {
+    throw new Error('CSS_TEXT 里出现了 ${...} 模板插值，内嵌样式会在运行时被改写，禁止');
+  }
+
+  // 再校验提取片段首尾确实是 CSS 注释边界，防止 marker 只匹配到一半
+  const trimmed = embedded.trim();
+  if (!trimmed.startsWith('/*') || !trimmed.endsWith('*/')) {
+    throw new Error('CSS_TEXT 提取片段的首尾不是 /* ... */，可能定位错了（起始/结束 marker 命中位置可疑）');
+  }
+
+  return embedded;
 }
 
 function describeSnippet(text, index) {

@@ -49,12 +49,31 @@ test('matchPeekUrl: 正例（video/av/bangumi/cheese/list + 子域 + 保留 quer
     'https://www.bilibili.com/list/ml1234567?bvid=BV1xx411c7mD',
     'https://www.bilibili.com/list/pl123',
     'https://m.bilibili.com/video/BV1xx411c7mD',
-    'http://www.bilibili.com/video/BV1xx411c7mD',
     'https://www.bilibili.com/video/BV1xx411c7mD#reply123'
   ];
   for (const href of cases) {
     assert.equal(api.matchPeekUrl(href), href, `应命中：${href}`);
   }
+});
+
+test('matchPeekUrl: http 链接归一化为 https，保留 path/query/hash（P-13）', () => {
+  assert.equal(
+    api.matchPeekUrl('http://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=333.999#reply'),
+    'https://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=333.999#reply'
+  );
+  // 已经是 https 的不动
+  assert.equal(
+    api.matchPeekUrl('https://www.bilibili.com/video/BV1xx411c7mD'),
+    'https://www.bilibili.com/video/BV1xx411c7mD'
+  );
+  // 同页判定不受协议差异影响（否则 http 链接会被当成另一个页面）
+  assert.equal(
+    api.isSamePeekPage(
+      'http://www.bilibili.com/video/BV1xx411c7mD',
+      'https://www.bilibili.com/video/BV1xx411c7mD'
+    ),
+    true
+  );
 });
 
 test('matchPeekUrl: 保留全部分P/追踪参数原样（不重排、不丢参数）', () => {
@@ -220,20 +239,53 @@ test('isFromDrawerHost: 抽屉 Shadow DOM 内的点击要被忽略', () => {
   assert.equal(api.isFromDrawerHost(null), false);
 });
 
-test('extractTempTitle: 先用 textContent，空则兜底 [title] 属性 / 子元素 [title]', () => {
-  // SPEC §4.3：链接文字优先
-  const plain = makeElement('A', {}, {}, ' 普通链接文字 ');
-  assert.equal(api.extractTempTitle(plain), '普通链接文字');
+test('pickTempTitleFromText: 分行过滤时长/播放量噪声，取最长行，截 80 字（P-01）', () => {
+  // B 站卡片典型拼接串（标题 + 时长 + 播放量）
+  assert.equal(api.pickTempTitleFromText('标题很长的一个视频 12:34 1.2万播放'), '标题很长的一个视频');
+  // 多行
+  assert.equal(api.pickTempTitleFromText('某个视频标题\n12:34\n1.2万播放'), '某个视频标题');
+  // 分隔符
+  assert.equal(api.pickTempTitleFromText('标题A | 标题更长的B | 3.4万播放'), '标题更长的B');
+  // 全是噪声 → 空串
+  assert.equal(api.pickTempTitleFromText('12:34\n1.2万\n播放 3.4万'), '');
+  // 截断到 80 字
+  assert.equal(api.pickTempTitleFromText('字'.repeat(100)).length, 80);
+  // 空 / 非字符串
+  assert.equal(api.pickTempTitleFromText(''), '');
+  assert.equal(api.pickTempTitleFromText(null), '');
+});
 
-  // 纯图片卡片链接没有文字 → 用自身的 title 属性
-  const imageOnly = makeElement('A', { title: '【干净标题】' });
-  assert.equal(api.extractTempTitle(imageOnly), '【干净标题】');
+test('isNoiseTitleText: 识别纯时长 / 纯播放量 / xx播放', () => {
+  const noise = ['12:34', '1:02:03', '1234', '12.3万', '12.3万播放', '3.4万次播放', '播放 12.3万', '弹幕 1.2万', '播放'];
+  for (const text of noise) {
+    assert.equal(api.isNoiseTitleText(text), true, `应为噪声：${text}`);
+  }
+  const titles = ['【4K】某个视频', '1234个视频', '12:34 的日常', '某个视频标题'];
+  for (const text of titles) {
+    assert.equal(api.isNoiseTitleText(text), false, `不是噪声：${text}`);
+  }
+});
 
-  // 自身也没有 title → 找子元素的 [title]
-  const nestedTitleNode = makeElement('SPAN', { title: '嵌套标题' });
-  const withNested = makeElement('A', {}, {}, '   ', nestedTitleNode);
-  assert.equal(api.extractTempTitle(withNested), '嵌套标题');
+test('extractTempTitle: textContent → img[alt] → aria-label → title → 视频（W2-5/P-01）', () => {
+  // 1) textContent 过滤噪声后取最长行
+  const card = makeElement('A', {}, {}, '标题文字\n12:34\n1.2万播放');
+  assert.equal(api.extractTempTitle(card), '标题文字');
 
+  // 2) 纯图片卡片链接：没有文字 → img[alt]
+  const image = makeElement('IMG', { alt: '图片 alt 标题' });
+  const imageOnly = makeElement('A', {}, {}, '', { 'img[alt]': image });
+  assert.equal(api.extractTempTitle(imageOnly), '图片 alt 标题');
+
+  // 3) aria-label
+  const aria = makeElement('A', { 'aria-label': 'aria 标题' });
+  assert.equal(api.extractTempTitle(aria), 'aria 标题');
+
+  // 4) title 属性
+  const titled = makeElement('A', { title: 'title 属性标题' });
+  assert.equal(api.extractTempTitle(titled), 'title 属性标题');
+
+  // 5) 全都没有 → 「视频」
+  assert.equal(api.extractTempTitle(makeElement('A')), '视频');
   assert.equal(api.extractTempTitle(null), '');
 });
 
@@ -241,7 +293,7 @@ test('extractTempTitle: 先用 textContent，空则兜底 [title] 属性 / 子�
  * B. 适配层行为（假 chrome / 假 document / 假抽屉）
  * ================================================================== */
 
-function makeElement(tagName, attrs = {}, extra = {}, textContent = '', querySelectorResult = null) {
+function makeElement(tagName, attrs = {}, extra = {}, textContent = '', querySelectorMap = null) {
   return {
     nodeType: 1,
     tagName,
@@ -251,7 +303,10 @@ function makeElement(tagName, attrs = {}, extra = {}, textContent = '', querySel
       return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
     },
     querySelector(selector) {
-      return querySelectorResult;
+      if (querySelectorMap && Object.prototype.hasOwnProperty.call(querySelectorMap, selector)) {
+        return querySelectorMap[selector];
+      }
+      return null;
     }
   };
 }
@@ -327,6 +382,8 @@ function bootContent(options = {}) {
   const documentStub = {
     listeners: [],
     documentElement: { clientWidth: options.innerWidth ?? 1200 },
+    // P-09：默认为 null；需要验证全屏场景时传 options.fullscreenElement
+    fullscreenElement: options.fullscreenElement ?? null,
     addEventListener(type, handler, capture) {
       this.listeners.push({ type, handler, capture });
     }
@@ -519,6 +576,35 @@ test('当前页就是该视频（仅差追踪参数）→ 不打开抽屉（I-15
   assert.equal(stub.instances[0].openCalls.length, 0);
 });
 
+test('http 视频链接被归一化为 https 后交给抽屉（P-13）', () => {
+  const stub = createDrawerStub();
+  const booted = bootContent({ Drawer: stub.FakeDrawer });
+  const anchor = makeAnchor('http://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=1#reply');
+
+  booted.clickListener.handler(createClickEvent([anchor]));
+
+  assert.equal(
+    stub.instances[0].openCalls[0].url,
+    'https://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=1#reply',
+    '混合内容会被 Chrome 拦掉，必须先升级为 https'
+  );
+});
+
+test('原页面全屏时点击视频链接 → 放行默认跳转，不打开抽屉（P-09）', () => {
+  const stub = createDrawerStub();
+  const booted = bootContent({
+    Drawer: stub.FakeDrawer,
+    fullscreenElement: { nodeType: 1, tagName: 'DIV' }
+  });
+
+  const event = createClickEvent([makeAnchor('https://www.bilibili.com/video/BV1xx411c7mD')]);
+  booted.clickListener.handler(event);
+
+  assert.equal(event.prevented, false, '全屏态不能吞掉点击，否则用户会觉得点了没反应');
+  assert.equal(event.propagationStopped, false);
+  assert.equal(stub.instances[0].openCalls.length, 0);
+});
+
 test('非视频链接 / 非 B 站链接 / 抽屉自身点击 → 不拦截', () => {
   const cases = [
     [makeAnchor('https://www.bilibili.com/read/cv123456')],
@@ -667,10 +753,10 @@ test('临时标题取链接文字：无 [title] 时使用 textContent', () => {
   assert.deepEqual(normalize(stub.instances[0].openCalls[0].opts), { title: '一个视频标题' });
 });
 
-test('临时标题为空时 open 不带 title 参数', () => {
+test('临时标题兜底「视频」：链接无任何可用文字时仍带 title 参数', () => {
   const stub = createDrawerStub();
   const booted = bootContent({ Drawer: stub.FakeDrawer });
   const anchor = makeAnchor('https://www.bilibili.com/video/BV1xx411c7mD', {}, '   ');
   booted.clickListener.handler(createClickEvent([anchor]));
-  assert.equal(stub.instances[0].openCalls[0].opts, undefined);
+  assert.deepEqual(normalize(stub.instances[0].openCalls[0].opts), { title: '视频' });
 });

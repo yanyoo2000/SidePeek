@@ -7,7 +7,9 @@
   "scripts": {
     "test": "node --test \"tests/unit/*.test.js\" && node scripts/check-css-sync.mjs",
     "test:unit": "node --test \"tests/unit/*.test.js\"",
-    "test:css": "node scripts/check-css-sync.mjs"
+    "test:css": "node scripts/check-css-sync.mjs",
+    "test:real": "node tests/integration/real-extension-check.mjs",
+    "test:all": "npm test && npm run test:real"
   },
   "engines": {
     "node": ">=22"

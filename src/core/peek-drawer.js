@@ -49,14 +49,14 @@
     persistWidth: null,
     onOpen: null,
     onClose: null,
-    autoFocus: true,
-    css: null
+    autoFocus: true
   };
 
   var LOAD_TIMEOUT_MS = 8000; // 超时无 load 即判定"打不开"，给错误态，不让用户对着白板干等
   var CLOSE_UNLOAD_DELAY_MS = 360; // 收起动画 320ms 放完再停 iframe，避免看到黑底往外滑
   var HISTORY_CLOSE_GUARD_MS = 300; // history.back() 后等 popstate 的兜底时长
   var MIN_MASK_GUTTER = 48; // 窄屏下抽屉左侧必须留出的可点遮罩宽度（SPEC §7 G-05）
+  var TOAST_DURATION_MS = 1600; // 轻提示停留时长：够读完一行短句，又不至于挡住视频太久了
 
   /**
    * 内嵌样式。内容必须与 src/core/peek-drawer.css 逐字一致（脚本会比对）。
@@ -108,7 +108,9 @@
   top: 0;
   right: 0;
   height: 100%;
-  width: var(--sp-width, 62vw);
+  /* 真实宽度由 JS 内联写入（_renderWidth）；这里是首帧兜底，不用 CSS 变量——
+     本文件唯一的样式来源是内嵌 CSS_TEXT，变量体系在 v0.1 未落地，不留死 token 误导后人。 */
+  width: 62vw;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -385,6 +387,11 @@
     animation: none;
   }
 }
+
+/*
+ * 样式表结束标记：scripts/check-css-sync.mjs 用它确认 CSS_TEXT 提取片段的首尾边界。
+ * 删掉这行会让防漂移脚本 fail。
+ */
 `;
 
   // 图标是模块内常量字符串，不含任何外部/用户数据，直接 innerHTML 没有 XSS 面。
@@ -441,23 +448,48 @@
   }
 
   /**
+   * 把 sandbox 属性值解析成"去重后的小写 token 数组"。
+   *
+   * 为什么必须小写化（P-07）：HTML 规范里 sandbox 关键字是 **ASCII 大小写不敏感** 的，
+   * 浏览器会把 `Allow-Top-Navigation` 当成和 `allow-top-navigation` 同一个 token。
+   * 如果这里用原文精确比较，大小写变体就能绕过黑名单、把反 frame-buster 关掉。
+   */
+  function normalizeSandboxTokens(value) {
+    if (typeof value !== 'string') return [];
+    var raw = value.trim();
+    if (!raw) return [];
+    var tokens = raw.split(/\s+/);
+    var out = [];
+    for (var i = 0; i < tokens.length; i++) {
+      var token = tokens[i].toLowerCase();
+      if (token && out.indexOf(token) === -1) out.push(token);
+    }
+    return out;
+  }
+
+  /** `allow-top-navigation` 与 `allow-top-navigation-by-user-activation` 都算顶层导航（覆盖全部变体）。 */
+  function isTopNavigationToken(token) {
+    return token.indexOf('allow-top-navigation') === 0;
+  }
+
+  /**
    * sandbox 只允许"同等或更严格"：调用方传进来的字符串里，任何顶层导航 token 都会被剔掉。
    * 这不是"防御性编程"，这是安全底线——放宽 sandbox 等于把反 frame-buster 关掉。
    */
   function sanitizeSandbox(input) {
     if (typeof input !== 'string' || !input.trim()) return SANDBOX;
 
-    var tokens = input.trim().split(/\s+/);
+    var tokens = normalizeSandboxTokens(input);
     var kept = [];
     var stripped = [];
 
     for (var i = 0; i < tokens.length; i++) {
       var token = tokens[i];
-      if (FORBIDDEN_SANDBOX_TOKENS.indexOf(token) !== -1) {
+      if (isTopNavigationToken(token)) {
         stripped.push(token);
         continue;
       }
-      if (kept.indexOf(token) === -1) kept.push(token);
+      kept.push(token);
     }
 
     if (stripped.length) {
@@ -481,6 +513,27 @@
     button.setAttribute('title', label);
     button.innerHTML = svg; // 常量 SVG，见上方说明
     return button;
+  }
+
+  /**
+   * M-03 / PRD I-27：F5 刷新后的残留自愈。
+   *
+   * 抽屉打开时会把地址栏改成 `...#sidepeek=<url>` 并压一条 `state.__sidepeek`。
+   * 刷新后浏览器会原样保留 URL 和 history.state，但抽屉按 I-11 **不自动恢复**，
+   * 于是地址栏会永久挂着一个上次视频的 hash，history 里也留一条脏记录。
+   * 这里在实例初始化时清理一次：只在确实有残留时 replaceState，不碰 B 站 SPA 的正常路由。
+   */
+  function healHistoryResidue() {
+    try {
+      if (typeof location === 'undefined' || typeof history === 'undefined' || !history.replaceState) return;
+      var hashResidue = typeof location.hash === 'string' && /#sidepeek=/.test(location.hash);
+      var stateResidue = !!(history.state && history.state.__sidepeek);
+      if (!hashResidue && !stateResidue) return;
+      history.replaceState(null, '', String(location.href).split('#')[0]);
+    } catch (error) {
+      // 清理失败不能影响 B 站页面（PRD I-27）
+      warn('清理刷新残留的 #sidepeek 失败（已忽略）', error);
+    }
   }
 
   // ── 构造函数 ────────────────────────────────────────────────────────────
@@ -529,7 +582,8 @@
     this._closeGuard = null;
     this._unloadTimer = null;
     this._toastTimer = null;
-    this._drag = null; // 拖拽中：{ startX, startWidth }
+    this._drag = null; // 拖拽中：{ startX, startWidth, lastClientX }
+    this._dragRaf = 0; // mousemove 的 rAF 节流句柄（B-01）
     this._savedRootStyle = null; // 拖拽期间临时改的 html cursor/user-select 原值
     this._prevFocus = null; // 打开前的焦点，关闭时还回去
     this._sandboxObserver = null;
@@ -550,6 +604,9 @@
     this._handleRetry = this._handleRetry.bind(this);
     this._handleOpenTab = this._handleOpenTab.bind(this);
     this._handleIsolation = this._handleIsolation.bind(this);
+
+    // M-03：实例化即自愈一次刷新残留（只动一次、只在有残留时动）
+    healHistoryResidue();
   }
 
   // ── DOM 构建（懒执行） ──────────────────────────────────────────────────
@@ -591,9 +648,11 @@
     var shadow = host.attachShadow({ mode: 'open' });
 
     // 样式：Shadow DOM 内 <style>，同步生效。宿主页面无论怎么写 CSS 都影响不到这里。
+    // 唯一来源就是内嵌的 CSS_TEXT（P-06：不再从宿主页面读取 <style id="sidepeek-core-css">，
+    // 那条通道会让页面脚本有机会改写抽屉样式，且没有任何调用方需要它）。
     var style = doc.createElement('style');
     style.setAttribute('data-sidepeek', 'core');
-    style.textContent = this._resolveCss();
+    style.textContent = CSS_TEXT;
     shadow.appendChild(style);
 
     // 遮罩（DOM 顺序在抽屉之前 —— 抽屉后绘制，所以层级更高）
@@ -606,10 +665,12 @@
     var drawer = doc.createElement('div');
     drawer.className = 'sp-drawer';
     drawer.setAttribute('role', 'dialog');
-    drawer.setAttribute('aria-modal', 'true');
     drawer.setAttribute('aria-label', 'SidePeek 侧边预览');
     drawer.setAttribute('aria-hidden', 'true');
     drawer.setAttribute('tabindex', '-1');
+    // M-02：关闭态整棵子树不可聚焦、不被 AT 感知（比单纯 aria-hidden 更强，Tab 也不会落进来）。
+    // 注意没有焦点陷阱，所以**不**声明 aria-modal="true"（否则模态语义与行为自相矛盾）。
+    drawer.setAttribute('inert', '');
 
     // 左边缘 6px 拖拽区（I-07）
     var resizer = doc.createElement('div');
@@ -711,25 +772,17 @@
     this._toastEl = toastEl;
     this._mounted = true;
 
-    // 全局监听：Esc（捕获阶段，优先于 B 站自己的处理器）、窗口尺寸、history。
+    // 全局监听：Esc（捕获阶段，优先于 B 站自己的处理器）、窗口尺寸、history、窗口失焦。
     // popstate 只有在 DOM 建好后才需要（首次 open 之后才会有我们自己的记录）。
+    // blur 用于 B-01：拖拽中切走窗口（Alt+Tab 等）时收不到 mouseup，按"松手"处理，避免拖拽态和光标残留。
     if (typeof window !== 'undefined') {
       window.addEventListener('keydown', this._handleKeyDown, true);
       window.addEventListener('resize', this._handleResize);
       window.addEventListener('popstate', this._handlePopState);
+      window.addEventListener('blur', this._handleDragEnd);
     }
 
     return true;
-  };
-
-  /** 样式来源：options.css > 页面里刻意提供的 <style id="sidepeek-core-css"> > 内嵌副本。 */
-  SidePeekDrawer.prototype._resolveCss = function () {
-    if (typeof this._opts.css === 'string' && this._opts.css.length > 20) return this._opts.css;
-    if (typeof document !== 'undefined') {
-      var provided = document.getElementById('sidepeek-core-css');
-      if (provided && provided.textContent && provided.textContent.length > 200) return provided.textContent;
-    }
-    return CSS_TEXT;
   };
 
   // ── iframe 生命周期 ─────────────────────────────────────────────────────
@@ -783,7 +836,8 @@
     this._sandboxObserver = new MutationObserver(function () {
       if (!self._frame || self._destroyed) return;
       var actual = self._frame.getAttribute('sandbox');
-      if (actual === expected) return;
+      // P-07：按"小写 token 集合"比较，别被 Allow-Top-Navigation 这类大小写变体绕过去。
+      if (normalizeSandboxTokens(actual).join(' ') === expected) return;
       warn('检测到 iframe sandbox 被外部改动（' + actual + '），已恢复为内置组合');
       self._frame.setAttribute('sandbox', expected);
     });
@@ -927,13 +981,22 @@
     if (!url) return this;
     options = options || {};
 
+    // P-05：复位上一次关闭的中间态。若 close() 发出了 history.back() 但 popstate 还没落地时又 open()，
+    // _closePending 会永久停在 true —— 之后每次 close() 都在入口提前 return，抽屉再也关不掉。
+    this._closePending = false;
+    if (this._closeGuard) {
+      clearTimeout(this._closeGuard);
+      this._closeGuard = null;
+    }
+
     var target = this._absoluteUrl(url);
     if (!target) {
       warn('open() 收到无法解析的 URL：', url);
       return this;
     }
 
-    // I-15 兜底：顶层已经就是这个页面就不开（适配层也会先判一次，这里是双保险，防止自我嵌套）。
+    // I-15 兜底：顶层 URL 与目标完全相同（忽略 hash）就不开，防止自我嵌套。
+    // 注意这里只做"完全相同"判定：更细的同页判定由适配层负责（P-03，避免出现 preventDefault 后谁都不动的死点）。
     if (this._isSameAsTopPage(target)) return this;
 
     // 适配层可以拒绝承载（例如点到了站外链接）
@@ -952,6 +1015,8 @@
       this._renderWidth();
       this._host.setAttribute('data-open', 'true');
       this._drawer.setAttribute('aria-hidden', 'false');
+      // M-02：展开前必须先摘掉 inert，否则 _focusDrawer() 与 Tab 都进不来
+      this._drawer.removeAttribute('inert');
 
       // 关键动画细节：先让"折叠态"完成一次样式计算，再挂 .sp-open，
       // 浏览器才会把它当成状态变化并跑过渡；否则元素一出生就是展开态，动画直接被跳过。
@@ -972,15 +1037,17 @@
     if (options.title != null) this._setTitle(options.title);
     else this._setTitle('');
 
-    // 若关闭时挂过 about:blank 定时器（停声音用的），这里撤掉，保持 iframe 现状
+    // 若关闭时挂过"移除 iframe"的延迟清理定时器（停声音用的），这里撤掉，保持 iframe 现状
     this._cancelUnload();
 
     this._load(target, false);
 
-    // 适配层给了 resolveTitle 就异步补真实标题；resolve 时若已切走/已关闭则丢弃
+    // M-04：顺序很重要 —— **先**通知适配层（onOpen 只做通知、不依赖 load 完成），**再**请求真实标题。
+    // 否则「浏览器前进重开」路径上适配层的 activeUrl 还是 null，它的 resolveTitle 会按防串台规则直接返回 null，
+    // 标题永远不回填（I-10 官方验收路径上的可见缺陷）。
+    this._safeCall('onOpen', [target]);
     if (isFn(this._opts.resolveTitle)) this._resolveTitle(target);
 
-    this._safeCall('onOpen', [target]);
     return this;
   };
 
@@ -1049,7 +1116,7 @@
     this._historyToken += 1;
 
     // 拖拽中 destroy：document 上的 mousemove/mouseup 必须一起摘掉，否则会留幽灵监听
-    this._endDrag(false);
+    this._endDrag();
 
     this._clearLoadTimer();
     if (this._closeGuard) {
@@ -1070,6 +1137,7 @@
       window.removeEventListener('keydown', this._handleKeyDown, true);
       window.removeEventListener('resize', this._handleResize);
       window.removeEventListener('popstate', this._handlePopState);
+      window.removeEventListener('blur', this._handleDragEnd);
     }
 
     this._removeFrame();
@@ -1196,6 +1264,8 @@
       clearTimeout(this._closeGuard);
       this._closeGuard = null;
     }
+    // B-01：拖拽中途被 Esc/X/遮罩关闭时，拖拽态不能跨关闭存活（否则 cursor/user-select/iframe 命中都留在原地）
+    this._endDrag();
     this._clearLoadTimer();
     this._loadToken += 1; // 让还没回来的超时/回调失效
     this._titleToken += 1; // 取消未完成的标题解析
@@ -1204,14 +1274,21 @@
 
     if (this._drawer) {
       this._drawer.classList.remove('sp-open'); // 触发 translateX(0) → translateX(100%) 过渡
-      this._drawer.setAttribute('aria-hidden', 'true');
       this._drawer.removeAttribute('data-fullscreen');
       this._fullscreen = false;
     }
     if (this._host) this._host.removeAttribute('data-open'); // 遮罩淡出，同时让出 pointer-events
     if (this._toastEl) this._toastEl.classList.remove('sp-visible');
 
+    // M-02 顺序：**先把焦点还回页面**，再给抽屉子树置 aria-hidden / inert。
+    // 反过来做会触发 Chrome 的 "Blocked aria-hidden ... descendant retained focus" 警告，
+    // 而且 inert 会直接吞掉焦点，键盘用户会突然"失去位置"。
     this._restoreFocus();
+    if (this._drawer) {
+      this._drawer.setAttribute('aria-hidden', 'true');
+      this._drawer.setAttribute('inert', '');
+    }
+
     this._scheduleUnload();
     this._safeCall('onClose', [this._url]);
   };
@@ -1248,7 +1325,9 @@
     var key = event.key;
     if (key !== 'Escape' && key !== 'Esc' && event.keyCode !== 27) return;
 
-    // 抽屉开着时 Esc 属于抽屉：不再让 B 站页面同时处理（避免它顺手关掉自己的弹层/退出全屏）
+    // 抽屉开着时 Esc 先归抽屉：stopPropagation 只阻止事件继续向**祖先/下层捕获链**传递，
+    // 它不会阻止注册在同一个 window 上的其它监听器（要那样得用 stopImmediatePropagation，
+    // 但那会打断 B 站自己的 Esc 快捷键，评审裁决明确不采纳）。这里只保证 B 站自己更深的处理逻辑不重复响应。
     event.stopPropagation();
     this.close();
   };
@@ -1359,19 +1438,22 @@
   };
 
   SidePeekDrawer.prototype._legacyCopy = function (text) {
+    var area = null;
     try {
-      var area = document.createElement('textarea');
+      area = document.createElement('textarea');
       area.value = text;
       area.setAttribute('readonly', '');
       area.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
       var container = document.body || document.documentElement;
       container.appendChild(area);
       area.select();
-      var ok = document.execCommand('copy');
-      container.removeChild(area);
-      return ok;
+      return document.execCommand('copy');
     } catch (error) {
       return false;
+    } finally {
+      // P-08：不论 select/execCommand 是否抛错，临时 textarea 都必须从 B 站页面里摘掉，
+      // 否则会在 body 里永久残留一个看不见的节点。
+      if (area && area.parentNode) area.parentNode.removeChild(area);
     }
   };
 
@@ -1384,7 +1466,7 @@
     this._toastTimer = setTimeout(function () {
       self._toastTimer = null;
       if (self._toastEl) self._toastEl.classList.remove('sp-visible');
-    }, 1600);
+    }, TOAST_DURATION_MS);
   };
 
   SidePeekDrawer.prototype._handleResize = function () {
@@ -1405,14 +1487,22 @@
     var rect = this._drawer.getBoundingClientRect();
     this._drag = {
       startX: event.clientX,
-      startWidth: rect.width || this._appliedWidth
+      startWidth: rect.width || this._appliedWidth,
+      lastClientX: event.clientX
     };
     if (this._resizer) this._resizer.classList.add('sp-dragging');
+
+    // B-01 第一步：拖拽期间让 iframe 不参与命中测试。
+    // 为什么必须做：向右拖（变窄）时抽屉左缘跟着光标右移，一次正常速度的位移就能让指针
+    // 落进 iframe；跨文档的 mousemove/mouseup 不会冒泡到父文档，于是「拖窄」直接失灵、
+    // mouseup 丢失 → 根元素的 cursor/user-select 永久残留。关掉 iframe 命中后，
+    // 指针事件始终留在顶层文档，document 上的监听才收得到。
+    if (this._frame) this._frame.style.pointerEvents = 'none';
 
     if (typeof document !== 'undefined') {
       document.addEventListener('mousemove', this._handleDragMove, true);
       document.addEventListener('mouseup', this._handleDragEnd, true);
-      // 拖拽期间全局换光标 + 禁止选中文字；原值存起来，松手/销毁时还原（不污染 B 站页面）
+      // 拖拽期间全局换光标 + 禁止选中文字；原值存起来，松手/关闭/销毁时还原（不污染 B 站页面）
       this._savedRootStyle = {
         cursor: document.documentElement.style.cursor,
         userSelect: document.documentElement.style.userSelect
@@ -1424,8 +1514,31 @@
 
   SidePeekDrawer.prototype._handleDragMove = function (event) {
     if (!this._drag) return;
+
+    // B-01 第二步：mouseup 在 iframe 内丢失时的兜底 —— 无按键的 mousemove 说明这次拖拽已经结束。
+    // 不判 buttons 的话，用户松开后单纯移动鼠标仍会持续改宽度，且 cursor/user-select 永久留在页面上。
+    if (event.buttons === 0) {
+      this._endDrag();
+      return;
+    }
+
+    this._drag.lastClientX = event.clientX;
+
+    // mousemove 节流到 rAF：拖动时鼠标事件频率远高于屏幕刷新率，
+    // 每帧只算一次宽度既能跟手，又避免每次 mousemove 都触发一次布局/重绘。
+    if (this._dragRaf) return;
+    var self = this;
+    this._dragRaf = this._raf(function () {
+      self._dragRaf = 0;
+      self._applyDragWidth();
+    });
+  };
+
+  /** 把最近的鼠标位置换算成抽屉宽度（由 rAF 回调）。 */
+  SidePeekDrawer.prototype._applyDragWidth = function () {
+    if (!this._drag) return;
     // 抽屉右边缘贴齐视口右侧，所以鼠标向左移 = 变宽
-    var next = this._drag.startWidth + (this._drag.startX - event.clientX);
+    var next = this._drag.startWidth + (this._drag.startX - this._drag.lastClientX);
     this._width = this._clampWidth(next);
     this._renderWidth();
   };
@@ -1433,14 +1546,26 @@
   SidePeekDrawer.prototype._handleDragEnd = function () {
     if (!this._drag) return;
     var applied = this._appliedWidth;
-    this._endDrag(false); // 先摘监听、还原样式
+    this._endDrag(); // 先摘监听、还原样式与 iframe 命中
     // 持久化交给适配层（core 不碰 chrome.storage）
     if (applied > 0 && isFn(this._opts.persistWidth)) this._safeCall('persistWidth', [applied]);
   };
 
-  SidePeekDrawer.prototype._endDrag = function (persist) {
+  /**
+   * 结束拖拽：取消未执行的 rAF、摘掉 document 监听、还原 cursor/user-select 与 iframe 命中。
+   * 必须幂等 —— mouseup、window.blur、无按键 mousemove、Esc/关闭、destroy 五条路径都会调它。
+   */
+  SidePeekDrawer.prototype._endDrag = function () {
+    if (this._dragRaf) {
+      this._cancelRaf(this._dragRaf);
+      this._dragRaf = 0;
+    }
     if (!this._drag) return;
     this._drag = null;
+
+    // 用 '' 而不是 'auto'：命中策略仍交给 Shadow DOM 里的 CSS（关闭态 pointer-events:none），
+    // 硬编码 auto 会在关闭态把 iframe 重新变成可命中元素。
+    if (this._frame) this._frame.style.pointerEvents = '';
 
     if (typeof document !== 'undefined') {
       document.removeEventListener('mousemove', this._handleDragMove, true);
@@ -1452,9 +1577,18 @@
       }
     }
     if (this._resizer) this._resizer.classList.remove('sp-dragging');
-    if (persist && this._appliedWidth > 0 && isFn(this._opts.persistWidth)) {
-      this._safeCall('persistWidth', [this._appliedWidth]);
-    }
+  };
+
+  /** requestAnimationFrame 的小封装：node 单测环境没有 rAF 时退化为 setTimeout。 */
+  SidePeekDrawer.prototype._raf = function (callback) {
+    if (typeof window !== 'undefined' && isFn(window.requestAnimationFrame)) return window.requestAnimationFrame(callback);
+    return setTimeout(callback, 16);
+  };
+
+  SidePeekDrawer.prototype._cancelRaf = function (handle) {
+    if (!handle) return;
+    if (typeof window !== 'undefined' && isFn(window.cancelAnimationFrame)) window.cancelAnimationFrame(handle);
+    else clearTimeout(handle);
   };
 
   // ── 宽度计算 ────────────────────────────────────────────────────────────
@@ -1513,25 +1647,16 @@
   };
 
   /**
-   * I-15 兜底判断：目标 URL 与顶层当前页面是否"同一个页面"。
-   * 忽略 hash；同路径且目标没带业务 query（只有 spm_id_from 之类跟踪参数时宁可当作同一页）
-   * 也算同一页，避免在视频页点自己的卡片形成自我嵌套。
+   * I-15 兜底判断：只判「顶层 URL 与目标 URL 完全相同」。
+   *
+   * 为什么不再用 origin+pathname+search 猜"同页"（P-03）：适配层 content.js 的同页判定更细，
+   * 若 core 在这里多判一层（例如把"目标没带 query"也当同页），会出现
+   * 「适配层已经 preventDefault、core 又拒绝打开、页面也没有跳转」的三输死点。
+   * 完全相同的 URL 一定不该开抽屉，这条是安全的；其余交给适配层。
    */
   SidePeekDrawer.prototype._isSameAsTopPage = function (url) {
     if (typeof location === 'undefined' || !location.href) return false;
-
-    var current = trimTrailingSlash(stripHash(location.href));
-    var target = trimTrailingSlash(stripHash(url));
-    if (current === target) return true;
-
-    try {
-      var a = new URL(current);
-      var b = new URL(target);
-      if (a.origin !== b.origin || a.pathname !== b.pathname) return false;
-      return b.search === '' || b.search === a.search;
-    } catch (error) {
-      return false;
-    }
+    return trimTrailingSlash(stripHash(location.href)) === trimTrailingSlash(stripHash(url));
   };
 
   SidePeekDrawer.prototype._focusDrawer = function () {

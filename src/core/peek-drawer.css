@@ -44,7 +44,9 @@
   top: 0;
   right: 0;
   height: 100%;
-  width: var(--sp-width, 62vw);
+  /* 真实宽度由 JS 内联写入（_renderWidth）；这里是首帧兜底，不用 CSS 变量——
+     本文件唯一的样式来源是内嵌 CSS_TEXT，变量体系在 v0.1 未落地，不留死 token 误导后人。 */
+  width: 62vw;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -321,3 +323,8 @@
     animation: none;
   }
 }
+
+/*
+ * 样式表结束标记：scripts/check-css-sync.mjs 用它确认 CSS_TEXT 提取片段的首尾边界。
+ * 删掉这行会让防漂移脚本 fail。
+ */

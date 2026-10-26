@@ -51,8 +51,8 @@
   var MAX_WIDTH_RATIO = 0.9;
   var MIN_MASK_GUTTER = 48; // G-05：抽屉左侧至少留 48px 可点遮罩，避免窄屏关不掉
   var Z_INDEX = 2147483000;
-  var TITLE_MAX_LEN = 200;
-  var TITLE_TIMEOUT_MS = 4000;
+  var TEMP_TITLE_MAX_LEN = 80; // W2-5 / P-01：临时标题截断长度
+  var TITLE_TIMEOUT_MS = 3000; // W2-5：3s 内拿不到真实标题就保留临时标题（与 background 一致）
   var INIT_TIMEOUT_MS = 800;
 
   // 反 frame-buster 的唯一手段（TECH-FINDINGS 结论 1）。
@@ -87,6 +87,10 @@
    * 判断 href 是否指向可被抽屉承载的 B 站视频页。
    * 命中返回「完整 URL」字符串（query 原样保留），否则返回 null。
    * target="_blank" 的卡片链接同样命中 —— 我们只关心 href，不关心 target（I-14）。
+   *
+   * P-13：命中 http:// 时统一升级为 https:// 再返回。https 顶层页面里内嵌
+   * http 子页属于混合内容，Chrome 会直接拦掉，抽屉只会空等 8s 变成错误态。
+   * B 站 http/https 是同一份内容，升级不改变语义，且 path/query/hash 全部保留。
    */
   function matchPeekUrl(href, base) {
     var url = toUrl(href, base);
@@ -95,8 +99,23 @@
     if (!isBilibiliHost(url.hostname)) return null;
     // 唯一收窄点：是否允许被抽屉承载只看 classifyPeekPath（白名单见 PEEK_PATH_PATTERNS）
     if (classifyPeekPath(url.pathname) === null) return null;
+    var peekUrl = toHttpsUrl(url);
+    if (!peekUrl) return null;
     // 必须保留 ?spm_id_from=...&vd_source=...&p=... 等全部参数，否则 B 站统计/分P会异常。
-    return url.href;
+    return peekUrl.href;
+  }
+
+  /** http → https（path/query/hash 原样保留）；已经是 https 或无法升级时返回 null。 */
+  function toHttpsUrl(url) {
+    if (!url) return null;
+    if (url.protocol === 'https:') return url;
+    if (url.protocol !== 'http:') return null;
+    try {
+      url.protocol = 'https:';
+      return url;
+    } catch (err) {
+      return null;
+    }
   }
 
   /**
@@ -124,8 +143,13 @@
     if (!url) return null;
     if (!isBilibiliHost(url.hostname)) return null;
     if (classifyPeekPath(url.pathname) === null) return null;
-    var page = url.searchParams.get('p') || '1';
-    return url.protocol + '//' + url.hostname + normalizePathname(url.pathname) + '?p=' + page;
+    // P-13 的 https 归一化同样作用于「同页判定」，否则 http 链接会被当成另一个页面。
+    var peekUrl = toHttpsUrl(url);
+    if (!peekUrl) return null;
+    var page = peekUrl.searchParams.get('p') || '1';
+    return (
+      peekUrl.protocol + '//' + peekUrl.hostname + normalizePathname(peekUrl.pathname) + '?p=' + page
+    );
   }
 
   function isSamePeekPage(targetHref, currentHref) {
@@ -169,12 +193,61 @@
 
   /** 普通文本化：去标签、折叠空白、截断。用于链接文字当临时标题。 */
   function normalizeTitleText(raw, maxLen) {
-    var limit = typeof maxLen === 'number' && maxLen > 0 ? maxLen : TITLE_MAX_LEN;
+    var limit = typeof maxLen === 'number' && maxLen > 0 ? maxLen : TEMP_TITLE_MAX_LEN;
     var text = typeof raw === 'string' ? raw : '';
     text = text.replace(/<[^>]*>/g, ' ');
     text = text.replace(/\s+/g, ' ').trim();
     if (text.length > limit) text = text.slice(0, limit).trim();
     return text;
+  }
+
+  /* ---------- 临时标题噪声过滤（W2-5 / P-01） ---------- */
+
+  // B 站卡片 textContent 常是「标题 12:34 1.2万播放」这种拼接串。
+  // 真实标题回来前（≤3s）头部不能显示这些噪声，所以按行/分隔符拆开后过滤。
+  var TITLE_NOISE_PATTERNS = [
+    /^\d{1,2}:\d{2}(?::\d{2})?$/, // 纯时长：12:34 / 1:02:03
+    /^\d+(?:\.\d+)?万?$/, // 纯数字/播放量：1234 / 12.3万
+    /^\d+(?:\.\d+)?万?\s*次?(?:播放|弹幕|点赞|投币|收藏|评论|观看|粉丝)$/, // 12.3万播放
+    /^(?:播放|弹幕|点赞|投币|收藏|评论|观看|粉丝|人看过)\s*\d+(?:\.\d+)?万?$/, // 播放 12.3万
+    /^(?:播放|弹幕|点赞|投币|收藏|评论|观看|粉丝|人看过)$/ // 裸的统计词
+  ];
+
+  /** 这一小段文本是不是纯噪声（时长 / 播放量 / xx播放）。 */
+  function isNoiseTitleText(raw) {
+    var text = String(raw || '').trim();
+    if (!text) return true;
+    for (var i = 0; i < TITLE_NOISE_PATTERNS.length; i++) {
+      if (TITLE_NOISE_PATTERNS[i].test(text)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 从 textContent 里挑临时标题（W2-5 / P-01）：
+   *   1. 按换行 + 常见分隔符（| ｜ · •）拆成若干行；
+   *   2. 每行按空白切词，从**行尾**剥掉纯时长/播放量等噪声词
+   *      （不在中间乱删，避免误伤标题里本身带数字的内容）；
+   *   3. 过滤空行与噪声行，取剩余最长的一行；
+   *   4. 截断到 80 字。
+   * 纯函数，便于单测。
+   */
+  function pickTempTitleFromText(rawText) {
+    var text = typeof rawText === 'string' ? rawText : '';
+    if (!text) return '';
+
+    var lines = text.replace(/\r\n?/g, '\n').split(/[\n|｜·•]+/);
+    var best = '';
+
+    for (var i = 0; i < lines.length; i++) {
+      var tokens = lines[i].trim().split(/\s+/);
+      while (tokens.length > 0 && isNoiseTitleText(tokens[tokens.length - 1])) tokens.pop();
+      var candidate = normalizeTitleText(tokens.join(' '), TEMP_TITLE_MAX_LEN);
+      if (!candidate || isNoiseTitleText(candidate)) continue;
+      if (candidate.length > best.length) best = candidate;
+    }
+
+    return best;
   }
 
   function getAttr(node, name) {
@@ -236,32 +309,41 @@
   }
 
   /**
-   * 临时标题（SPEC §4.3：先用链接自身的 textContent）。
-   * textContent 为空时（纯图片卡片链接）再兜底到 [title] 属性 —— B 站卡片标题
-   * 也常放在 title 属性里，总比空标题好。
+   * 临时标题（W2-5 / P-01 优先级）：
+   *   1. textContent：分行过滤噪声、取最长行、截 80 字；
+   *   2. 兜底 img[alt]（B 站图片卡片链接常常只有图，alt 就是标题）；
+   *   3. aria-label；
+   *   4. title 属性；
+   *   5. 最终兜底「视频」，避免头部空标题。
    */
   function extractTempTitle(anchor) {
     if (!anchor) return '';
-    var fromText = normalizeTitleText(anchor.textContent);
+    var fromText = pickTempTitleFromText(anchor.textContent);
     if (fromText) return fromText;
 
-    var direct = normalizeTitleText(getAttr(anchor, 'title'));
-    if (direct) return direct;
+    var imageAlt = pickImageAlt(anchor);
+    if (imageAlt) return imageAlt;
 
-    var titled = null;
-    if (typeof anchor.querySelector === 'function') {
-      try {
-        titled = anchor.querySelector('[title]');
-      } catch (err) {
-        titled = null;
-      }
-    }
-    if (titled) {
-      var nested = normalizeTitleText(getAttr(titled, 'title'));
-      if (nested) return nested;
-    }
+    var ariaLabel = normalizeTitleText(getAttr(anchor, 'aria-label'), TEMP_TITLE_MAX_LEN);
+    if (ariaLabel) return ariaLabel;
 
-    return '';
+    var titleAttr = normalizeTitleText(getAttr(anchor, 'title'), TEMP_TITLE_MAX_LEN);
+    if (titleAttr) return titleAttr;
+
+    return '视频';
+  }
+
+  /** 内层图片的 alt（B 站图片卡片链接通常只包一个 <img alt="标题">）。 */
+  function pickImageAlt(anchor) {
+    if (typeof anchor.querySelector !== 'function') return '';
+    var image = null;
+    try {
+      image = anchor.querySelector('img[alt]');
+    } catch (err) {
+      image = null;
+    }
+    if (!image) return '';
+    return normalizeTitleText(getAttr(image, 'alt'), TEMP_TITLE_MAX_LEN);
   }
 
   /* ================================================================== *
@@ -279,6 +361,8 @@
       clampWidth: clampWidth,
       computeWidthBounds: computeWidthBounds,
       normalizeTitleText: normalizeTitleText,
+      isNoiseTitleText: isNoiseTitleText,
+      pickTempTitleFromText: pickTempTitleFromText,
       scanPathForAnchor: scanPathForAnchor,
       isFromDrawerHost: isFromDrawerHost,
       extractTempTitle: extractTempTitle
@@ -472,6 +556,10 @@
 
     // I-15：当前页面已经是这个视频，不做自我嵌套。
     if (isSamePeekPage(url, window.location.href)) return;
+
+    // P-09 / PRD I-23：原页面处于全屏时，抽屉宿主不在 top layer，会被全屏元素完全盖住 ——
+    // 此时拦截等于"点了没反应"。放行浏览器默认跳转，绝不静默吞掉点击。
+    if (document.fullscreenElement) return;
 
     // 确认是视频链接后才吞事件：不能粗暴拦截所有点击，
     // 否则会破坏播放器控件、点赞、弹幕开关等 B 站自有交互。
