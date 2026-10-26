@@ -184,3 +184,54 @@ drawer.destroy();             // 移除 DOM 与所有监听
 2. 有对应的验收证据（单元测试通过 / E2E 截图 / 手写复现步骤）
 3. reviewer 无「阻塞级」意见
 4. 已由 Lead 提交到 git，并有清晰 commit message
+
+---
+
+## 7. 契约裁决记录（Lead，v0.1.1）
+
+analyst 在 `docs/PRD.md` 第 6 节提出 G-01~G-14 共 14 条契约缺口。以下为**最终裁决**，与本文档正文冲突时以本节为准。
+
+| 编号 | 裁决 | 说明 |
+|---|---|---|
+| G-01 CSS 通道 | **已由 dev-core 以「CSS 内联进 JS」解决，不引入 WAR、不引入构建** | `peek-drawer.js` 内的 `CSS_TEXT` 是唯一真源，`peek-drawer.css` 是人类可读副本。必须由 `scripts/check-css-sync.mjs` 做逐字比对防止漂移，命令纳入 `npm test`。**不批准** `web_accessible_resources`。 |
+| G-02 错误态 DOM | **采纳**。3.1 的 DOM 树补充灰态节点 | 合法节点：`.sp-loading`、`.sp-error`、`button[data-act="retry"]`。revIewer 不得再以「结构偏离」判定。 |
+| G-03 标题职责 | **唯一入口 = core**。适配层只实现 `resolveTitle`，**不得**旁路直接改 DOM | 现状已符合，保持。 |
+| G-04 切换时 history | **采纳 replaceState** | 已打开状态下切视频 → `replaceState`，保证「后退一次即关闭抽屉」。 |
+| G-05 窄屏 clamp 反转 | **采纳**，公式固定为：`hi = min(maxWidthRatio*vw, vw-48)`；`lo = min(minWidth, hi)` | 保证 `lo <= hi` 恒成立；抽屉左侧永远至少留 48px 可点遮罩。 |
+| G-06 关闭后停音频 | **采纳**。关闭过渡结束后把 `iframe.src` 置 `about:blank`（约 350ms 后） | 否则抽屉关了视频还在响，是体验硬伤。下次打开重新加载，可接受。 |
+| G-07 存储域 | **`chrome.storage.local`**，key `sidepeek.width` | 不给跨设备同步（小屏上宽度会异常）。QA 的 shim 必须实现 `local`。 |
+| G-08 复制链接 | **采纳回退链**：`navigator.clipboard.writeText` → 失败则 `textarea + execCommand('copy')` → 再失败提示用户手动复制 | 无焦点/非安全上下文时会抛 `NotAllowedError`。 |
+| G-09 非 video 路径白名单 | **先保留** `bangumi/play`、`cheese/play`、`list`，但标注为 best-effort | 已实测可嵌入的只有 `/video/`。QA 必须对这三类各抽测一次 framability；**若某类触发 frame-buster，直接从白名单删掉**，不要试图绕过。 |
+| G-10 back() 卡死 | **采纳 300ms 兜底**：调用 `history.back()` 后若 300ms 仍未收起，强制收起 | 防止 popstate 未触发时抽屉卡在展开态。 |
+| G-11 打开时暂停原视频 | **不做**（v0.1 非目标） | 原页面视频继续播放是可接受的并存行为。 |
+| G-12 预热宿主 | **不做** | 首次打开 ~350ms 动画已覆盖创建开销。 |
+| G-13 8s 超时 | **保持 8s** | 弱网下 2.5s P50 已达标，8s 判失败合理。 |
+| G-14 `m.bilibili.com` | **不纳入** | 移动站无抽屉交互意义，且布局差异大。 |
+
+### 补充：真机联调闸门
+
+analyst 指出现有流程缺少「真实 Chrome 加载已解压扩展」的验证环节，而 initScript 注入式 E2E **无法发现 manifest / 文件路径类问题**（G-01 就是典型）。因此新增闸门：
+
+**T7 真机联调（Lead 负责）**：用独立 user-data-dir 启动一个带 `--load-extension=<SidePeek 目录>` 与 `--remote-debugging-port` 的真实 Chrome，
+通过 CDP 断言：
+1. `chrome://extensions` 中扩展无加载错误
+2. 打开 B 站页面后 content script 已注入（`window.__SIDEPEEK_LOADED__` 为真）
+3. 抽屉样式已生效（取 `#sidepeek-host` 的 shadowRoot 内 computedStyle 非默认值）
+4. 点击视频链接后顶层 URL 未变（frame-buster 被挡住）
+5. 截图留证
+
+只有 T7 通过，才允许打 tag 与推送最终版。
+
+### 补充裁决（G-06 / I-08 的偏离，Lead 事后批准）
+
+dev-core 在实现过程中发现 `iframe.src` 变更会污染 **joint session history**（子帧历史条目），
+直接导致 I-10「后退关闭 / 前进重开」失效（实测 `history.length` 3→4，`back()` 被子帧条目吃掉）。
+因此做了两处偏离字面契约的实现，**Lead 予以批准**，理由是二者都服务于同一个目标：保住 I-10。
+
+| 项 | 裁决 | 理由 |
+|---|---|---|
+| G-06 停音频 | **改为「关闭过渡结束后移除 iframe 节点」**，不用 `src='about:blank'` | 两者都能销毁 browsing context 停掉声音；但 `about:blank` 会往 joint session history 追加子帧条目，破坏 I-10。**以 I-10 为准**。代价：再次打开需重新加载（已在 G-06 取舍内）。 |
+| I-08 切 URL | **改为「重建 iframe 节点」**，不改 `src` | 对外行为与契约完全一致（抽屉保持展开、只换内容、不重播入场动画），但 `history.length` 全程不变，I-10 恢复正常。 |
+
+**后续约束**：任何再动 iframe 生命周期的改动，必须回归验证 I-10（后退关闭 + 前进重开）与
+`history.length` 不增长，否则视为回归。

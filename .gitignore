@@ -7,3 +7,4 @@ Thumbs.db
 .vscode/
 *.log
 tests/e2e/artifacts/
+tests/integration/.tmp/
