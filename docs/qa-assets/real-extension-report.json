@@ -1,0 +1,116 @@
+{
+  "browser": "Chrome/155.0.8059.85",
+  "extensionId": "joidkfbkmankcklnlfgmjcmblbmckfnf",
+  "headless": true,
+  "screenshots": {
+    "screenshotC": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-c.png",
+    "screenshotD": "D:\\yan-github-code\\SidePeek\\docs\\qa-assets\\real-extension-d.png"
+  },
+  "total": 18,
+  "passed": 18,
+  "failed": [],
+  "checks": [
+    {
+      "id": "A",
+      "title": "扩展成功加载（CDP Extensions.loadUnpacked）",
+      "pass": true,
+      "detail": "id = joidkfbkmankcklnlfgmjcmblbmckfnf"
+    },
+    {
+      "id": "B",
+      "title": "background service worker 已注册（manifest 解析通过）",
+      "pass": true,
+      "detail": "chrome-extension://joidkfbkmankcklnlfgmjcmblbmckfnf/src/background.js"
+    },
+    {
+      "id": "C-1",
+      "title": "同源（首页）：content script 已注入（隔离世界可见）",
+      "pass": true
+    },
+    {
+      "id": "C-2",
+      "title": "同源（首页）：点击后抽屉从右侧展开",
+      "pass": true
+    },
+    {
+      "id": "C-3",
+      "title": "同源（首页）：顶层文档未被 frame-buster 劫持（hash 变化为扩展自身的 #sidepeek= 记账）",
+      "pass": true,
+      "detail": "origin+path+search 不变；hash=#sidepeek=https%3A%2F%2Fwww.bilibili.com%"
+    },
+    {
+      "id": "C-4",
+      "title": "同源（首页）：Shadow DOM 内 CSS 生效",
+      "pass": true,
+      "detail": "position=fixed zIndex=auto shadow=rgba(0, 0, 0, 0.24) -8px 0px 32px 0px"
+    },
+    {
+      "id": "C-5",
+      "title": "同源（首页）：iframe sandbox 组合正确",
+      "pass": true,
+      "detail": "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-downloads"
+    },
+    {
+      "id": "C-6",
+      "title": "同源（首页）：iframe 已加载视频页",
+      "pass": true,
+      "detail": "https://www.bilibili.com/video/BV1Jcnd6kEQ3"
+    },
+    {
+      "id": "C-7",
+      "title": "同源（首页）：pointer-events 分层正确（宿主 none / 抽屉 auto）",
+      "pass": true,
+      "detail": "host=none drawer=auto"
+    },
+    {
+      "id": "C-8",
+      "title": "同源（首页）：Esc 可关闭抽屉",
+      "pass": true
+    },
+    {
+      "id": "D-1",
+      "title": "跨源（搜索页）：content script 已注入（隔离世界可见）",
+      "pass": true
+    },
+    {
+      "id": "D-2",
+      "title": "跨源（搜索页）：点击后抽屉从右侧展开",
+      "pass": true
+    },
+    {
+      "id": "D-3",
+      "title": "跨源（搜索页）：顶层文档未被 frame-buster 劫持（hash 变化为扩展自身的 #sidepeek= 记账）",
+      "pass": true,
+      "detail": "origin+path+search 不变；hash=#sidepeek=https%3A%2F%2Fwww.bilibili.com%"
+    },
+    {
+      "id": "D-4",
+      "title": "跨源（搜索页）：Shadow DOM 内 CSS 生效",
+      "pass": true,
+      "detail": "position=fixed zIndex=auto shadow=rgba(0, 0, 0, 0.24) -8px 0px 32px 0px"
+    },
+    {
+      "id": "D-5",
+      "title": "跨源（搜索页）：iframe sandbox 组合正确",
+      "pass": true,
+      "detail": "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-downloads"
+    },
+    {
+      "id": "D-6",
+      "title": "跨源（搜索页）：iframe 已加载视频页",
+      "pass": true,
+      "detail": "https://www.bilibili.com/video/BV1U3n46GEzY/"
+    },
+    {
+      "id": "D-7",
+      "title": "跨源（搜索页）：pointer-events 分层正确（宿主 none / 抽屉 auto）",
+      "pass": true,
+      "detail": "host=none drawer=auto"
+    },
+    {
+      "id": "D-8",
+      "title": "跨源（搜索页）：Esc 可关闭抽屉",
+      "pass": true
+    }
+  ]
+}
