@@ -270,6 +270,13 @@ P-15/P-16（CSS 同步脚本加固 + 跨文件常量一致性）、P-17（死参
 | M-01「`real-extension-check.mjs` 只跑同源首页，缺跨源 search 场景」 | **不成立**。当前脚本含 C（首页，同源）与 D（search.bilibili.com → www，**跨源**）两个场景。证据：`docs/qa-assets/real-extension-report.json` 中 checks 为 `A,B,C-1..C-8,D-1..D-8`，`total=18 passed=18`。评审时读到的是脚本重跑前的旧报告。 |
 | 提醒「real-extension-report.json 含 C-2 FAIL，是过期证据」 | **已修正**。该文件在 T7 定稿重跑后已被覆盖为 18/18 全绿，可作当前验收依据。 |
 
+> 追溯说明：上表记录的是当时的审计事实（T7 当时为 18 项）。
+> 此后 T7 追加了 History 回归（C-8~C-11 / D-8~D-11）、标题清洗（C-13 / D-13）等断言，
+> 现为 **27 PASS + 1 SKIP + 0 FAIL**（D-10 因 B 站剪除前向条目而 SKIP）。
+> 另：REVIEW-03 曾指出 Lead 早期用 `innerWidth` 判「抽屉展开」导致 D-10 假阳性四连绿，
+> 该判据已修正并写进 `docs/T7-REAL-EXTENSION.md` §8，**这是本项目最值得保留的一次自我纠错记录**。
+> 以 `docs/T7-REAL-EXTENSION.md` 与 `docs/qa-assets/real-extension-report.json` 为最新口径。
+
 #### 8.4 契约补白（P-12）
 
 SPEC 3.1 的 DOM 树为**最小必需结构**，实现允许附带以下辅助节点，评审不得据此判为结构偏离：

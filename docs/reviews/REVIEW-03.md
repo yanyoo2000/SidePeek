@@ -167,3 +167,52 @@ T7 报告      → total=28 / passed=28 / failed=[]（mtime 04:11，晚于 core 
 - 文档：6 项 MINOR（其中 R-02/R-03 涉及用户可见的错误表述，建议同批修）。
 
 修正 D-10 判据 + 同步文档并重跑 T7 后，只要 `D-10` 呈现为 SKIP、`C-10` 为 PASS、文档不再宣称「真机与 harness 相反」，即可判 **PASS** 并打 `v0.1.0`。
+
+---
+
+## 8. 复审追加 / 签字（W4-3 follow-up，对应 `0dd4c41`）
+
+> 本节是对 §6「必须修清单」的闭环核验。**结论：PASS**，REVIEW-03 的 CHANGES-REQUESTED 已关闭。
+
+只读验证（本轮）：
+
+```
+npm test     → tests 91 / pass 91 / fail 0；CSS in sync (6678 bytes)
+node --check → peek-drawer.js / content.js / background.js / peek-drawer.test.js /
+               real-extension-check.mjs 全部通过
+最终基线实测 sha256（前 16 位）与 Lead 提供的四值逐字一致：
+  peek-drawer.js  69237 B  7f8553ca4ac96bbe
+  content.js      25367 B  98f561fed6c3c99d
+  background.js   10072 B  f5ddc31604f0373f
+  manifest.json     941 B  bf8ef3db63ad79ae
+bundle 新鲜度：tests/e2e/dist manifest = core 69237B/7f8553ca4ac9 + content 98f561fed6c3
+  （generatedAt 04:31:56，晚于 core 04:28:02）→ QA 注入的是 MINOR-2 修复后的代码
+T7 报告：total=28 / passed=27 / skipped=1 / failed=[]（mtime 04:37:27，晚于 core 与 bundle）
+```
+
+### 8.1 必修项闭环
+
+| §6 必修 | 状态 | 我复核到的证据 |
+|---|---|---|
+| 1. T7 D-10 判据修复 + 重跑 | **CLOSED** | 新增 `drawerState()`（`real-extension-check.mjs:249-273`）：以 **`.sp-open` 类为主判据**（`open = hasOpenClass && width>200 && left < clientWidth-4`），并用 `documentElement.clientWidth` 交叉校验；脚本内已无 `innerWidth - 10` 判据（仅 `:242-247` 注释解释旧 bug）。重跑结果与 REVIEW-03 §3 的预测**逐字一致**：`C-10` PASS 且 detail 带 `hash="#sidepeek=…"`（真重开）、**`D-10` `skipped=true` detail `state=null hash=""`**、`C-11`=3、`D-11`=4（往返不增长）。 |
+| 2. R-06 report skipped 汇总 | **CLOSED** | `summary` 有独立 `skipped` 字段，`passed` 只统计 `pass && !skipped`（`:648-649`）；控制台打印「跳过: N（原因见报告 checks[].detail）」（`:661`）；实测报告 JSON 为 `{total:28, passed:27, skipped:1, failed:[]}`。 |
+| 3. MINOR-2（48px） | **CLOSED（改代码）** | `viewportWidth()` 优先 `documentElement.clientWidth`、`0/undefined` 回退 `innerWidth/1280`（`peek-drawer.js:447-459`，注释写明 fixed 包含块与滚动条成因）；新增 4 条单测（`peek-drawer.test.js:517-580`：492/477→429 且遮罩 48、1200/1215 仍 ≥48、clientWidth 0/undefined 回退、无滚动条口径不变）；91/91 全绿；QA C-10 复测 429/48 与代码一致。 |
+| 4. R-01/R-02/R-04 文档 | **CLOSED** | **T7 文档**：结论 `27 PASS + 1 SKIP（0 FAIL）`（`:4-5`）、§4 标题（`:59`）、D-8~D-11 行标出 D-10 SKIP（`:70`）、§8 整节重写并完整收录四条证据链（判据 bug / 像素实证 / 报告自相矛盾 / 站点脚本，`:128-155`）与教训「我这边跑通了≠断言是对的」（`:173`）。**QA.md**：C-07b（`:66`）= PASS(www)/SKIP(search) 且注明旧结论被 REVIEW-03 推翻；L-2（`:155`）=「真实扩展下同样成立」+ `state.back` 机制；计数统一为 27+1（`:43`、`:86`、`:188`）；C-10 标注入 429/48。**README**：#4（`:24`）加 caveat、#9（`:101`）改为「搜索结果页通常不生效，首页通常正常」。**USAGE**：§4.5（`:178`）提示框 + 已知限制 #9（`:387`）+ 后续重新编号（共 13 条）。 |
+| 5. R-05 基线哈希统一 | **CLOSED** | 见上方只读实测：四个文件与 Lead 提供的最终基线一致；`c27510675fa5` 仅作为 QA 中间基线出现在 QA.md 的取证说明里（已标注）。 |
+
+### 8.2 非阻塞观察（2 条，可留到 v0.1.1，不影响签字）
+
+- **O-1（证据精度）**：`docs/QA.md:69` C-10 的 900×700 数字（默认 558 / clamp 810 / 遮罩 327·75）是 **MINOR-2 修复前**的旧基线值，未标注；最终基线按 `clientWidth=885` 应为默认 **549**、`setWidth(2000)`→**797**、遮罩 **336·88**。结论（≥48）不受影响，建议顺手改数或标「旧基线」。
+- **O-2（历史记录）**：`docs/SPEC.md:271` 的 §8.3 审计记录仍写 `total=18`（当时事实），而 T7 已扩到 28 项；建议加一句「后续扩展到 28 项，见 T7 文档」，避免未来读者误判。SPEC 结论无需改动。
+
+### 8.3 签字
+
+**PASS。**
+
+- BLOCKER：0（D-10 假阳性已修正并重跑，结果与预测一致）
+- MAJOR：0
+- MINOR：0 阻塞项（O-1/O-2 为可选文档微调）
+- 产品代码：无需改动；N 系列 10 项闭环、91/91 单测、bundle 与源码 sha 一致、T7 27 PASS + 1 SKIP、Gate ③（I-10）成立（同源真通过 + 跨源站方行为以 SKIP 归档）。
+
+可以打 tag `v0.1.0` 并推送；tag message 建议写入最终基线哈希：`peek-drawer 7f8553ca…`、`content 98f561fed6c3…`、`background f5ddc316…`、`manifest bf8ef3db…`。
+
